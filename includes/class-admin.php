@@ -151,7 +151,8 @@ class AOS_MS_Admin {
                             <th>Email</th>
                             <th>Membership Type</th>
                             <th>Expired</th>
-                            <th>Matched Listing</th>
+                            <th>Provider Listing (#<?php echo (int) AOS_MS_Settings::get('provider_directory_id', 34); ?>)</th>
+                            <th>Practice Listing (#<?php echo (int) AOS_MS_Settings::get('practice_directory_id', 115); ?>)</th>
                             <th>Confidence</th>
                             <th>Action</th>
                         </tr>
@@ -257,8 +258,10 @@ class AOS_MS_Admin {
 
     public function ajax_load_expired() {
         $this->verify_nonce();
-        $civi   = new AOS_MS_CiviCRM();
-        $months = (int) AOS_MS_Settings::get( 'expired_lookback_months', 6 );
+        $civi         = new AOS_MS_CiviCRM();
+        $months       = (int) AOS_MS_Settings::get( 'expired_lookback_months', 6 );
+        $provider_dir = (int) AOS_MS_Settings::get( 'provider_directory_id', 34 );
+        $practice_dir = (int) AOS_MS_Settings::get( 'practice_directory_id', 115 );
 
         if ( ! $civi->is_configured() ) {
             wp_send_json_error( 'CiviCRM not configured.' );
@@ -276,30 +279,60 @@ class AOS_MS_Admin {
 
         $rows = [];
         foreach ( $memberships as $m ) {
-            $match = AOS_MS_Matcher::find_listing( $m );
+            $all_matches = AOS_MS_Matcher::find_all_listings( $m );
 
-            $listing_label = '—';
-            $listing_url   = '';
-            $edit_url      = '';
-            if ( $match ) {
-                $post          = get_post( $match['post_id'] );
-                $listing_label = $post ? $post->post_title : 'Post #' . $match['post_id'];
-                $edit_url      = admin_url( 'post.php?post=' . $match['post_id'] . '&action=edit' );
-                $current_status = $post ? $post->post_status : 'unknown';
+            // Split matches into provider vs practice by directory ID
+            $provider_match = null;
+            $practice_match = null;
+            foreach ( $all_matches as $match ) {
+                if ( $match['directory_id'] === $provider_dir && ! $provider_match ) {
+                    $provider_match = $match;
+                } elseif ( $match['directory_id'] === $practice_dir && ! $practice_match ) {
+                    $practice_match = $match;
+                }
             }
 
+            // Helper to build listing info
+            $make_info = function( $match ) {
+                if ( ! $match ) return [ 'post_id' => 0, 'label' => '—', 'edit_url' => '', 'status' => '' ];
+                $post = get_post( $match['post_id'] );
+                return [
+                    'post_id'  => $match['post_id'],
+                    'label'    => $post ? $post->post_title : 'Post #' . $match['post_id'],
+                    'edit_url' => admin_url( 'post.php?post=' . $match['post_id'] . '&action=edit' ),
+                    'status'   => get_post_status( $match['post_id'] ) ?: 'unknown',
+                ];
+            };
+
+            $provider_info = $make_info( $provider_match );
+            $practice_info = $make_info( $practice_match );
+
+            $confidence  = $provider_match ? $provider_match['confidence'] : ( $practice_match ? $practice_match['confidence'] : 'none' );
+            $match_method = $provider_match ? $provider_match['method'] : ( $practice_match ? $practice_match['method'] : '' );
+
             $rows[] = [
-                'contact_id'         => $m['contact_id'] ?? '',
-                'display_name'       => $m['display_name'] ?? '',
-                'email'              => $m['email'] ?? '',
-                'membership_type_id' => $m['membership_type_id'] ?? '',
-                'end_date'           => $m['end_date'] ?? '',
-                'listing_post_id'    => $match ? $match['post_id'] : 0,
-                'listing_label'      => $listing_label,
-                'listing_edit_url'   => $edit_url,
-                'listing_status'     => $match ? ( get_post_status( $match['post_id'] ) ?: 'unknown' ) : '',
-                'confidence'         => $match ? $match['confidence'] : 'none',
-                'match_method'       => $match ? $match['method'] : '',
+                'contact_id'              => $m['contact_id'] ?? '',
+                'display_name'            => $m['display_name'] ?? '',
+                'email'                   => $m['email'] ?? '',
+                'membership_type_id'      => $m['membership_type_id'] ?? '',
+                'end_date'                => $m['end_date'] ?? '',
+                // Provider listing
+                'provider_post_id'        => $provider_info['post_id'],
+                'provider_label'          => $provider_info['label'],
+                'provider_edit_url'       => $provider_info['edit_url'],
+                'provider_status'         => $provider_info['status'],
+                // Practice listing
+                'practice_post_id'        => $practice_info['post_id'],
+                'practice_label'          => $practice_info['label'],
+                'practice_edit_url'       => $practice_info['edit_url'],
+                'practice_status'         => $practice_info['status'],
+                // Legacy single-listing fields for backward compat
+                'listing_post_id'         => $provider_info['post_id'] ?: $practice_info['post_id'],
+                'listing_label'           => $provider_info['post_id'] ? $provider_info['label'] : $practice_info['label'],
+                'listing_edit_url'        => $provider_info['post_id'] ? $provider_info['edit_url'] : $practice_info['edit_url'],
+                'listing_status'          => $provider_info['post_id'] ? $provider_info['status'] : $practice_info['status'],
+                'confidence'              => $confidence,
+                'match_method'            => $match_method,
             ];
         }
 
@@ -308,13 +341,31 @@ class AOS_MS_Admin {
 
     public function ajax_deactivate_listing() {
         $this->verify_nonce();
-        $post_id = (int) ( $_POST['post_id'] ?? 0 );
-        if ( ! $post_id ) wp_send_json_error( 'Invalid post ID.' );
+        // Accept single post_id or array of post_ids to deactivate at once
+        $post_ids = [];
+        if ( ! empty( $_POST['post_ids'] ) && is_array( $_POST['post_ids'] ) ) {
+            $post_ids = array_map( 'intval', $_POST['post_ids'] );
+        } elseif ( ! empty( $_POST['post_id'] ) ) {
+            $post_ids = [ (int) $_POST['post_id'] ];
+        }
+        $post_ids = array_filter( $post_ids );
+        if ( empty( $post_ids ) ) wp_send_json_error( 'Invalid post ID(s).' );
 
-        $result = AOS_MS_Listing_Creator::deactivate( $post_id );
-        if ( is_wp_error( $result ) ) wp_send_json_error( $result->get_error_message() );
+        $deactivated = [];
+        $errors      = [];
+        foreach ( $post_ids as $pid ) {
+            $result = AOS_MS_Listing_Creator::deactivate( $pid );
+            if ( is_wp_error( $result ) ) {
+                $errors[] = $pid;
+            } else {
+                $deactivated[] = $pid;
+            }
+        }
 
-        wp_send_json_success( [ 'post_id' => $post_id, 'message' => 'Listing set to draft.' ] );
+        if ( ! empty( $errors ) && empty( $deactivated ) ) {
+            wp_send_json_error( 'Failed to deactivate listing(s): ' . implode( ', ', $errors ) );
+        }
+        wp_send_json_success( [ 'post_ids' => $deactivated, 'message' => 'Listing(s) set to draft.' ] );
     }
 
     public function ajax_deactivate_bulk() {

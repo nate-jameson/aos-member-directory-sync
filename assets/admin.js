@@ -66,30 +66,56 @@ jQuery(function($) {
         return s ? s : '—';
     }
 
+    function listingCell(post_id, label, edit_url, status) {
+        if (!post_id) return '<span style="color:#646970">—</span>';
+        var link = '<a href="' + edit_url + '" target="_blank">' + escHtml(label) + '</a>';
+        return link + ' ' + statusLabel(status);
+    }
+
+    function deactivateBtn(postIds, label) {
+        var ids = postIds.filter(function(id) { return id > 0; });
+        if (!ids.length) return '—';
+        return '<button class="button aos-ms-btn-deactivate" data-post-ids="' + ids.join(',') + '">' + label + '</button>';
+    }
+
     function renderExpiredTable(rows) {
         var tbody = $('#aos-ms-expired-tbody').empty();
         var matchedCount = 0;
 
         rows.forEach(function(r) {
-            var hasMatch  = r.listing_post_id > 0;
+            var provId    = r.provider_post_id || 0;
+            var pracId    = r.practice_post_id || 0;
+            var hasMatch  = provId > 0 || pracId > 0;
             var isMatched = hasMatch && r.confidence !== 'none';
             if (isMatched) matchedCount++;
 
-            var listingCell = hasMatch
-                ? '<a href="' + r.listing_edit_url + '" target="_blank">' + escHtml(r.listing_label) + '</a>'
-                : '<span style="color:#646970">No match found</span>';
-            var actionCell = (hasMatch && r.listing_status !== 'draft')
-                ? '<button class="button aos-ms-btn-deactivate" data-post-id="' + r.listing_post_id + '">Deactivate</button>'
-                : (r.listing_status === 'draft' ? '<em>Already draft</em>' : '—');
+            // Collect active (non-draft) post IDs for this row
+            var activeIds = [];
+            if (provId > 0 && r.provider_status !== 'draft') activeIds.push(provId);
+            if (pracId > 0 && r.practice_status !== 'draft') activeIds.push(pracId);
+
+            var actionCell;
+            if (!hasMatch) {
+                actionCell = '—';
+            } else if (!activeIds.length) {
+                actionCell = '<em>Already draft</em>';
+            } else {
+                actionCell = deactivateBtn(activeIds, 'Deactivate Both');
+            }
+
+            // Checkbox value: comma-separated active IDs for this row
+            var checkVal  = activeIds.join(',');
+            var checkDisabled = (!hasMatch || !activeIds.length) ? 'disabled' : '';
 
             tbody.append(
-                '<tr data-post-id="' + r.listing_post_id + '">' +
-                '<td><input type="checkbox" class="aos-ms-check-expired" ' + (!hasMatch || r.listing_status === 'draft' ? 'disabled' : '') + ' value="' + r.listing_post_id + '"></td>' +
+                '<tr data-provider-id="' + provId + '" data-practice-id="' + pracId + '">' +
+                '<td><input type="checkbox" class="aos-ms-check-expired" ' + checkDisabled + ' value="' + checkVal + '"></td>' +
                 '<td>' + escHtml(r.display_name) + '</td>' +
                 '<td>' + escHtml(r.email) + '</td>' +
                 '<td>' + escHtml(r.membership_type_id) + '</td>' +
                 '<td>' + escHtml(r.end_date) + '</td>' +
-                '<td>' + listingCell + '</td>' +
+                '<td>' + listingCell(provId, r.provider_label, r.provider_edit_url, r.provider_status) + '</td>' +
+                '<td>' + listingCell(pracId, r.practice_label, r.practice_edit_url, r.practice_status) + '</td>' +
                 '<td>' + confidenceBadge(r.confidence) + (r.match_method ? ' <small>(' + r.match_method + ')</small>' : '') + '</td>' +
                 '<td>' + actionCell + '</td>' +
                 '</tr>'
@@ -106,26 +132,30 @@ jQuery(function($) {
         $('.aos-ms-check-expired:not(:disabled)').prop('checked', this.checked);
     });
 
-    // Single deactivate
+    // Single row deactivate (handles both provider + practice post IDs)
     $(document).on('click', '.aos-ms-btn-deactivate', function() {
         var $btn    = $(this).prop('disabled', true).text('…');
-        var postId  = $(this).data('post-id');
+        var postIds = $(this).data('post-ids').toString().split(',').map(Number).filter(Boolean);
         var $status = $('#aos-ms-sync-status');
-        $.post(ajaxurl, { action: 'aos_ms_deactivate_listing', nonce: nonce, post_id: postId }, function(res) {
+        $.post(ajaxurl, { action: 'aos_ms_deactivate_listing', nonce: nonce, post_ids: postIds }, function(res) {
             if (res.success) {
                 $btn.closest('tr').find('td').addClass('aos-ms-done');
                 $btn.replaceWith('<em>Deactivated</em>');
             } else {
-                $btn.prop('disabled', false).text('Deactivate');
+                $btn.prop('disabled', false).text('Deactivate Both');
                 setStatus($status, '✗ ' + res.data, 'error');
             }
         });
     });
 
-    // Bulk deactivate
+    // Bulk deactivate — collects all active post IDs across all checked rows
     $('#aos-ms-deactivate-all').on('click', function() {
-        var ids = $('.aos-ms-check-expired:checked').map(function() { return this.value; }).get();
-        if (!ids.length) { ids = $('.aos-ms-check-expired:not(:disabled)').map(function() { return this.value; }).get(); }
+        var ids = [];
+        var $checks = $('.aos-ms-check-expired:checked');
+        if (!$checks.length) $checks = $('.aos-ms-check-expired:not(:disabled)');
+        $checks.each(function() {
+            this.value.split(',').forEach(function(id) { var n = parseInt(id); if (n) ids.push(n); });
+        });
         if (!ids.length) return;
         if (!confirm('Deactivate ' + ids.length + ' listing(s)? This sets them to Draft status.')) return;
 
@@ -137,9 +167,9 @@ jQuery(function($) {
             $btn.prop('disabled', false).text('Deactivate All Matched Listings');
             if (res.success) {
                 setStatus($status, '✓ ' + res.data.message, 'success');
-                ids.forEach(function(id) {
-                    $('[data-post-id="' + id + '"] td').addClass('aos-ms-done');
-                    $('[data-post-id="' + id + '"] .aos-ms-btn-deactivate').replaceWith('<em>Deactivated</em>');
+                $('.aos-ms-check-expired:checked, .aos-ms-check-expired:not(:disabled)').each(function() {
+                    $(this).closest('tr').find('td').addClass('aos-ms-done');
+                    $(this).closest('tr').find('.aos-ms-btn-deactivate').replaceWith('<em>Deactivated</em>');
                 });
             } else {
                 setStatus($status, '✗ ' + res.data, 'error');

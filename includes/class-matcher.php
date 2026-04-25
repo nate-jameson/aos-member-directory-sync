@@ -9,75 +9,89 @@ class AOS_MS_Matcher {
     /**
      * Find a matching listing post for a CiviCRM contact.
      * Returns [ 'post_id' => int, 'confidence' => 'high'|'medium'|'low', 'method' => string ] or null.
+     * Only returns the first match — use find_all_listings() to get all matches across both directories.
      */
     public static function find_listing( $contact ) {
-        // 1. Email match (high confidence)
-        if ( ! empty( $contact['email'] ) ) {
-            $match = self::find_by_email( $contact['email'] );
-            if ( $match ) {
-                return [ 'post_id' => $match, 'confidence' => 'high', 'method' => 'email' ];
-            }
-        }
-
-        // 2. Full name match in post title (medium confidence)
-        if ( ! empty( $contact['display_name'] ) ) {
-            $match = self::find_by_name( $contact['display_name'] );
-            if ( $match ) {
-                return [ 'post_id' => $match, 'confidence' => 'medium', 'method' => 'name' ];
-            }
-        }
-
-        // 3. First + last name match
-        if ( ! empty( $contact['first_name'] ) && ! empty( $contact['last_name'] ) ) {
-            $name  = $contact['first_name'] . ' ' . $contact['last_name'];
-            $match = self::find_by_name( $name );
-            if ( $match ) {
-                return [ 'post_id' => $match, 'confidence' => 'medium', 'method' => 'name' ];
-            }
-        }
-
-        return null;
+        $all = self::find_all_listings( $contact );
+        return ! empty( $all ) ? $all[0] : null;
     }
 
-    private static function find_by_email( $email ) {
+    /**
+     * Find ALL matching listing posts for a CiviCRM contact across all directories.
+     * Returns array of [ 'post_id' => int, 'directory_id' => int, 'confidence' => string, 'method' => string ].
+     */
+    public static function find_all_listings( $contact ) {
+        $results = [];
+
+        // 1. Email match (high confidence)
+        if ( ! empty( $contact['email'] ) ) {
+            $ids = self::find_all_by_email( $contact['email'] );
+            foreach ( $ids as $pid ) {
+                $dir_id = (int) get_post_meta( $pid, '_atbdp_listing_type', true );
+                $results[ $pid ] = [ 'post_id' => $pid, 'directory_id' => $dir_id, 'confidence' => 'high', 'method' => 'email' ];
+            }
+        }
+
+        // 2. Name match (medium confidence) — only if no email matches found
+        if ( empty( $results ) ) {
+            $name = '';
+            if ( ! empty( $contact['display_name'] ) ) {
+                $name = $contact['display_name'];
+            } elseif ( ! empty( $contact['first_name'] ) && ! empty( $contact['last_name'] ) ) {
+                $name = $contact['first_name'] . ' ' . $contact['last_name'];
+            }
+            if ( $name ) {
+                $ids = self::find_all_by_name( $name );
+                foreach ( $ids as $pid ) {
+                    $dir_id = (int) get_post_meta( $pid, '_atbdp_listing_type', true );
+                    $results[ $pid ] = [ 'post_id' => $pid, 'directory_id' => $dir_id, 'confidence' => 'medium', 'method' => 'name' ];
+                }
+            }
+        }
+
+        return array_values( $results );
+    }
+
+    private static function find_all_by_email( $email ) {
         global $wpdb;
-        // Check _atbdp_email post meta
-        $post_id = $wpdb->get_var( $wpdb->prepare(
-            "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_atbdp_email' AND meta_value = %s LIMIT 1",
+        $ids = [];
+
+        // Check _atbdp_email post meta (all matches)
+        $meta_ids = $wpdb->get_col( $wpdb->prepare(
+            "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_atbdp_email' AND meta_value = %s",
             sanitize_email( $email )
         ) );
-        if ( $post_id ) return (int) $post_id;
+        foreach ( $meta_ids as $id ) $ids[] = (int) $id;
 
         // Also check listings where author has this email
         $user = get_user_by( 'email', $email );
         if ( $user ) {
-            $post_id = $wpdb->get_var( $wpdb->prepare(
-                "SELECT ID FROM {$wpdb->posts} WHERE post_author = %d AND post_type = 'at_biz_dir' AND post_status NOT IN ('trash','auto-draft') LIMIT 1",
+            $author_ids = $wpdb->get_col( $wpdb->prepare(
+                "SELECT ID FROM {$wpdb->posts} WHERE post_author = %d AND post_type = 'at_biz_dir' AND post_status NOT IN ('trash','auto-draft')",
                 $user->ID
             ) );
-            if ( $post_id ) return (int) $post_id;
+            foreach ( $author_ids as $id ) {
+                $int_id = (int) $id;
+                if ( ! in_array( $int_id, $ids, true ) ) $ids[] = $int_id;
+            }
         }
 
-        return null;
+        return $ids;
     }
 
-    private static function find_by_name( $name ) {
+    private static function find_all_by_name( $name ) {
         global $wpdb;
-        $clean = sanitize_text_field( $name );
-        // Strip Dr./Dr prefix for search
+        $clean       = sanitize_text_field( $name );
         $search_name = preg_replace( '/^(Dr\.?\s*)/i', '', $clean );
 
-        $post_id = $wpdb->get_var( $wpdb->prepare(
+        return array_map( 'intval', $wpdb->get_col( $wpdb->prepare(
             "SELECT ID FROM {$wpdb->posts}
              WHERE post_type = 'at_biz_dir'
              AND post_status NOT IN ('trash','auto-draft')
-             AND (post_title LIKE %s OR post_title LIKE %s)
-             LIMIT 1",
+             AND (post_title LIKE %s OR post_title LIKE %s)",
             '%' . $wpdb->esc_like( $search_name ) . '%',
             '%' . $wpdb->esc_like( $clean ) . '%'
-        ) );
-
-        return $post_id ? (int) $post_id : null;
+        ) ) );
     }
 
     /**
