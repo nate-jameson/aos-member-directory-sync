@@ -29,7 +29,7 @@ class AOS_MS_Listing_Creator {
      */
     public static function create_draft( $contact, $membership_type_id = 0, $ai_data = [], $directory_id = 0 ) {
         if ( ! $directory_id ) {
-            $directory_id = (int) AOS_MS_Settings::get( 'default_directory_id', 34 );
+            $directory_id = (int) AOS_MS_Settings::get( 'provider_directory_id', 34 );
         }
 
         $name  = $contact['display_name'] ?? trim( ( $contact['first_name'] ?? '' ) . ' ' . ( $contact['last_name'] ?? '' ) );

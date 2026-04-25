@@ -176,9 +176,16 @@ jQuery(function($) {
 
     function renderNewTable(rows) {
         var tbody = $('#aos-ms-new-tbody').empty();
+        var provDir = aosMsData.providerDirectoryId;
+        var pracDir = aosMsData.practiceDirectoryId;
+
         rows.forEach(function(r, i) {
             var loc = [r.city, r.state_province].filter(Boolean).join(', ') || '—';
             var web = r.website ? '<a href="' + escAttr(r.website) + '" target="_blank">↗</a>' : '—';
+
+            var provBtn = '<button class="button button-small aos-ms-btn-create" data-idx="' + i + '" data-dir="' + provDir + '" data-col="provider">+ Create</button>';
+            var pracBtn = '<button class="button button-small aos-ms-btn-create" data-idx="' + i + '" data-dir="' + pracDir + '" data-col="practice">+ Create</button>';
+
             tbody.append(
                 '<tr id="aos-ms-new-row-' + i + '" data-idx="' + i + '">' +
                 '<td><input type="checkbox" class="aos-ms-check-new" value="' + i + '"></td>' +
@@ -188,7 +195,8 @@ jQuery(function($) {
                 '<td>' + (r.credentialing ? '<strong>' + escHtml(r.credentialing) + '</strong>' : '—') + '</td>' +
                 '<td>' + escHtml(loc) + '</td>' +
                 '<td>' + web + '</td>' +
-                '<td><button class="button aos-ms-btn-create" data-idx="' + i + '">Create Draft</button></td>' +
+                '<td class="aos-ms-col-provider-' + i + '">' + provBtn + '</td>' +
+                '<td class="aos-ms-col-practice-' + i + '">' + pracBtn + '</td>' +
                 '</tr>'
             );
         });
@@ -202,24 +210,30 @@ jQuery(function($) {
         $('.aos-ms-check-new').prop('checked', this.checked);
     });
 
-    // Single draft create
+    // Single draft create (provider OR practice button)
     $(document).on('click', '.aos-ms-btn-create', function() {
-        var $btn = $(this).prop('disabled', true).text('Creating…');
-        var idx  = parseInt($(this).data('idx'));
-        var c    = newMembersData[idx];
+        var $btn    = $(this).prop('disabled', true).text('Creating…');
+        var idx     = parseInt($(this).data('idx'));
+        var dirId   = parseInt($(this).data('dir'));
+        var col     = $(this).data('col'); // 'provider' or 'practice'
+        var c       = newMembersData[idx];
         var $status = $('#aos-ms-new-status');
 
-        var params = $.extend({ action: 'aos_ms_create_draft', nonce: nonce }, c);
+        var params = $.extend({ action: 'aos_ms_create_draft', nonce: nonce, directory_id: dirId }, c);
         $.post(ajaxurl, params, function(res) {
             if (res.success) {
                 var badge = '<span class="aos-ms-ai-badge' + (res.data.ai_conf === 'low' ? ' low' : '') + '">AI ' + (res.data.ai_conf === 'high' ? '✓' : '~') + '</span>';
-                $btn.replaceWith('<a href="' + res.data.edit_url + '" target="_blank" class="button">Edit Draft</a>' + badge);
-                $('#aos-ms-new-row-' + idx).css('background', '#f0f7ee');
+                $btn.replaceWith('<a href="' + res.data.edit_url + '" target="_blank" class="button button-small">Edit ↗</a> ' + badge);
+                // Highlight row only when both columns are done
+                var $row = $('#aos-ms-new-row-' + idx);
+                if ($row.find('.aos-ms-btn-create').length === 0) {
+                    $row.css('background', '#f0f7ee');
+                }
             } else {
-                $btn.prop('disabled', false).text('Create Draft');
+                $btn.prop('disabled', false).text('+ Create');
                 setStatus($status, '✗ ' + res.data, 'error');
             }
-        }).fail(function() { $btn.prop('disabled', false).text('Create Draft'); });
+        }).fail(function() { $btn.prop('disabled', false).text('+ Create'); });
     });
 
     // Create all / selected drafts
@@ -229,7 +243,7 @@ jQuery(function($) {
         var contacts = indices.map(function(i) { return newMembersData[i]; });
 
         if (!contacts.length) return;
-        if (!confirm('Create ' + contacts.length + ' draft listings with AI enrichment? This may take a minute.')) return;
+        if (!confirm('Create Provider + Practice listings for ' + contacts.length + ' member(s) with AI enrichment? This may take a minute.')) return;
 
         var $btn    = $(this).prop('disabled', true).text('Creating…');
         var $status = $('#aos-ms-new-status');
@@ -240,7 +254,7 @@ jQuery(function($) {
             nonce:    nonce,
             contacts: JSON.stringify(contacts),
         }, function(res) {
-            $btn.prop('disabled', false).html('<span class="dashicons dashicons-edit"></span> Create All Drafts (AI Enriched)');
+            $btn.prop('disabled', false).html('<span class="dashicons dashicons-edit"></span> Create All Drafts (Provider + Practice, AI Enriched)');
             if (res.success) {
                 setStatus($status, '✓ ' + res.data.message, 'success');
                 // Reload the table to reflect new state

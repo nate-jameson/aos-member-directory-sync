@@ -12,8 +12,8 @@ class AOS_MS_Admin {
         add_action( 'wp_ajax_aos_ms_deactivate_listing',[ $this, 'ajax_deactivate_listing' ] );
         add_action( 'wp_ajax_aos_ms_deactivate_bulk',   [ $this, 'ajax_deactivate_bulk' ] );
         add_action( 'wp_ajax_aos_ms_load_new_members',  [ $this, 'ajax_load_new_members' ] );
-        add_action( 'wp_ajax_aos_ms_create_draft',      [ $this, 'ajax_create_draft' ] );
-        add_action( 'wp_ajax_aos_ms_create_all_drafts', [ $this, 'ajax_create_all_drafts' ] );
+        add_action( 'wp_ajax_aos_ms_create_draft',       [ $this, 'ajax_create_draft' ] );
+        add_action( 'wp_ajax_aos_ms_create_all_drafts',  [ $this, 'ajax_create_all_drafts' ] );
     }
 
     public function register_menu() {
@@ -33,8 +33,10 @@ class AOS_MS_Admin {
         wp_enqueue_style( 'aos-ms-style', AOS_MS_URL . 'assets/admin.css', [], AOS_MS_VERSION );
         wp_enqueue_script( 'aos-ms-script', AOS_MS_URL . 'assets/admin.js', [ 'jquery' ], AOS_MS_VERSION, true );
         wp_localize_script( 'aos-ms-script', 'aosMsData', [
-            'nonce'   => wp_create_nonce( 'aos_ms_nonce' ),
-            'ajaxurl' => admin_url( 'admin-ajax.php' ),
+            'nonce'               => wp_create_nonce( 'aos_ms_nonce' ),
+            'ajaxurl'             => admin_url( 'admin-ajax.php' ),
+            'providerDirectoryId' => (int) AOS_MS_Settings::get( 'provider_directory_id', 34 ),
+            'practiceDirectoryId' => (int) AOS_MS_Settings::get( 'practice_directory_id', 115 ),
         ] );
     }
 
@@ -187,7 +189,7 @@ class AOS_MS_Admin {
                     <h3 id="aos-ms-new-count"></h3>
                     <div>
                         <button id="aos-ms-create-all-drafts" class="button button-primary" style="display:none;">
-                            <span class="dashicons dashicons-edit"></span> Create All Drafts (AI Enriched)
+                            <span class="dashicons dashicons-edit"></span> Create All Drafts (Provider + Practice, AI Enriched)
                         </button>
                     </div>
                 </div>
@@ -201,11 +203,12 @@ class AOS_MS_Admin {
                             <th>Credentialing</th>
                             <th>Location</th>
                             <th>Website</th>
-                            <th>Action</th>
+                            <th>Provider Listing (#<?php echo (int) AOS_MS_Settings::get('provider_directory_id', 34); ?>)</th>
+                            <th>Practice Listing (#<?php echo (int) AOS_MS_Settings::get('practice_directory_id', 115); ?>)</th>
                         </tr>
                     </thead>
                     <tbody id="aos-ms-new-tbody">
-                        <tr><td colspan="8">Loading…</td></tr>
+                        <tr><td colspan="9">Loading…</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -405,7 +408,8 @@ class AOS_MS_Admin {
             'city'           => sanitize_text_field( $_POST['city'] ?? '' ),
             'state_province' => sanitize_text_field( $_POST['state_province'] ?? '' ),
         ];
-        $type_id = intval( $_POST['membership_type_id'] ?? 0 );
+        $type_id      = intval( $_POST['membership_type_id'] ?? 0 );
+        $directory_id = intval( $_POST['directory_id'] ?? 0 );
 
         // AI enrichment
         $ai_data = [];
@@ -414,16 +418,17 @@ class AOS_MS_Admin {
             $ai_data = $gemini->enrich_listing( $contact, $contact['website'] );
         }
 
-        $post_id = AOS_MS_Listing_Creator::create_draft( $contact, $type_id, $ai_data );
+        $post_id = AOS_MS_Listing_Creator::create_draft( $contact, $type_id, $ai_data, $directory_id );
         if ( is_wp_error( $post_id ) ) {
             wp_send_json_error( $post_id->get_error_message() );
         }
 
         wp_send_json_success( [
-            'post_id'   => $post_id,
-            'edit_url'  => admin_url( 'post.php?post=' . $post_id . '&action=edit' ),
-            'ai_conf'   => $ai_data['confidence'] ?? 'none',
-            'message'   => 'Draft created.',
+            'post_id'      => $post_id,
+            'directory_id' => $directory_id,
+            'edit_url'     => admin_url( 'post.php?post=' . $post_id . '&action=edit' ),
+            'ai_conf'      => $ai_data['confidence'] ?? 'none',
+            'message'      => 'Draft created.',
         ] );
     }
 
@@ -431,6 +436,10 @@ class AOS_MS_Admin {
         $this->verify_nonce();
         $contacts = json_decode( stripslashes( $_POST['contacts'] ?? '[]' ), true );
         if ( empty( $contacts ) ) wp_send_json_error( 'No contacts provided.' );
+
+        $provider_dir = (int) AOS_MS_Settings::get( 'provider_directory_id', 34 );
+        $practice_dir = (int) AOS_MS_Settings::get( 'practice_directory_id', 115 );
+        $directories  = array_unique( array_filter( [ $provider_dir, $practice_dir ] ) );
 
         $created = 0;
         $errors  = [];
@@ -452,23 +461,27 @@ class AOS_MS_Admin {
             ];
             $type_id = intval( $c['membership_type_id'] ?? 0 );
 
+            // Enrich once, reuse for both listings
             $ai_data = [];
             if ( $gemini->is_configured() ) {
                 $ai_data = $gemini->enrich_listing( $contact, $contact['website'] );
             }
 
-            $post_id = AOS_MS_Listing_Creator::create_draft( $contact, $type_id, $ai_data );
-            if ( is_wp_error( $post_id ) ) {
-                $errors[] = ( $contact['display_name'] ?: 'Contact ' . $contact['id'] ) . ': ' . $post_id->get_error_message();
-            } else {
-                $created++;
+            foreach ( $directories as $dir_id ) {
+                $post_id = AOS_MS_Listing_Creator::create_draft( $contact, $type_id, $ai_data, $dir_id );
+                if ( is_wp_error( $post_id ) ) {
+                    $errors[] = ( $contact['display_name'] ?: 'Contact ' . $contact['id'] ) . ' (dir ' . $dir_id . '): ' . $post_id->get_error_message();
+                } else {
+                    $created++;
+                }
             }
         }
 
+        $listings_each = count( $directories );
         wp_send_json_success( [
             'created' => $created,
             'errors'  => $errors,
-            'message' => "Created {$created} draft listings." . ( $errors ? ' Errors: ' . implode( '; ', array_slice( $errors, 0, 3 ) ) : '' ),
+            'message' => "Created {$created} draft listings ({$listings_each} per member)." . ( $errors ? ' Errors: ' . implode( '; ', array_slice( $errors, 0, 3 ) ) : '' ),
         ] );
     }
 }

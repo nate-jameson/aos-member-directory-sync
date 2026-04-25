@@ -46,8 +46,9 @@ class AOS_MS_Settings {
             'sync' => [
                 'label'  => 'Sync Settings',
                 'fields' => [
-                    'expired_lookback_months' => [ 'label' => 'Expired Lookback (months)',    'type' => 'number', 'placeholder' => '6', 'default' => '6' ],
-                    'default_directory_id'    => [ 'label' => 'Default Directory ID for new listings', 'type' => 'number', 'placeholder' => '34', 'default' => '34' ],
+                    'expired_lookback_months' => [ 'label' => 'Expired Lookback (months)',         'type' => 'number', 'placeholder' => '6',   'default' => '6' ],
+                    'provider_directory_id'   => [ 'label' => 'Provider Directory ID (Dentists)',  'type' => 'number', 'placeholder' => '34',  'default' => '34' ],
+                    'practice_directory_id'   => [ 'label' => 'Practice Directory ID (Practices)', 'type' => 'number', 'placeholder' => '115', 'default' => '115' ],
                 ],
             ],
         ];
