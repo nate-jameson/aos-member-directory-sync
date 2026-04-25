@@ -376,9 +376,9 @@ class AOS_MS_Admin {
                 'display_name'       => $m['display_name'] ?? '',
                 'email'              => $m['email'] ?? '',
                 'membership_type_id' => $m['membership_type_id'] ?? '',
-                'credentialing'      => AOS_MS_Listing_Creator::get_credentialing_level( $m['membership_type_id'] ?? 0 ),
+                'credentialing'      => '', // populated below via second query
                 'city'               => $m['city'] ?? '',
-                'state_province'     => $m['state_province'] ?? '',
+                'state_province'     => $m['state'] ?? $m['state_province'] ?? '',
                 'website'            => $m['website'] ?? '',
                 'phone'              => $m['phone'] ?? '',
                 'street_address'     => $m['street_address'] ?? '',
@@ -387,6 +387,39 @@ class AOS_MS_Admin {
                 'last_name'          => $m['last_name'] ?? '',
             ];
         }
+
+        // Second query: determine which credential memberships are actively held.
+        // A member may qualify for the directory via a base "Member" type but hold
+        // separate active (or inactive) Achievement/Fellowship/Diplomate memberships.
+        $achievement_ids = array_values( array_filter( array_map( 'intval', array_map( 'trim', explode( ',', AOS_MS_Settings::get( 'type_achievement', '' ) ) ) ) ) );
+        $fellowship_ids  = array_values( array_filter( array_map( 'intval', array_map( 'trim', explode( ',', AOS_MS_Settings::get( 'type_fellowship', '' ) ) ) ) ) );
+        $diplomate_ids   = array_values( array_filter( array_map( 'intval', array_map( 'trim', explode( ',', AOS_MS_Settings::get( 'type_diplomate', '' ) ) ) ) ) );
+        $all_cred_ids    = array_unique( array_merge( $achievement_ids, $fellowship_ids, $diplomate_ids ) );
+
+        $credential_map = [];
+        if ( ! empty( $all_cred_ids ) && ! empty( $rows ) ) {
+            $contact_ids = array_column( $rows, 'contact_id' );
+            $cred_result = $civi->get_credential_memberships( $contact_ids, $all_cred_ids );
+            if ( ! is_wp_error( $cred_result ) ) {
+                $credential_map = $cred_result;
+            }
+        }
+
+        // Badge label order: Diplomate > Fellowship > Achievement
+        $badge_order = [ 'Diplomate' => 0, 'Fellowship' => 1, 'Achievement' => 2 ];
+        foreach ( $rows as &$row ) {
+            $active_type_ids = $credential_map[ (string) $row['contact_id'] ] ?? [];
+            $badges = [];
+            foreach ( $active_type_ids as $tid ) {
+                if ( in_array( $tid, $diplomate_ids ) )   $badges[] = 'Diplomate';
+                elseif ( in_array( $tid, $fellowship_ids ) )  $badges[] = 'Fellowship';
+                elseif ( in_array( $tid, $achievement_ids ) ) $badges[] = 'Achievement';
+            }
+            $badges = array_unique( $badges );
+            usort( $badges, fn( $a, $b ) => ( $badge_order[ $a ] ?? 9 ) <=> ( $badge_order[ $b ] ?? 9 ) );
+            $row['credentialing'] = implode( ', ', $badges );
+        }
+        unset( $row );
 
         wp_send_json_success( [ 'rows' => $rows ] );
     }
@@ -407,8 +440,9 @@ class AOS_MS_Admin {
             'city'           => sanitize_text_field( $_POST['city'] ?? '' ),
             'state_province' => sanitize_text_field( $_POST['state_province'] ?? '' ),
         ];
-        $type_id      = intval( $_POST['membership_type_id'] ?? 0 );
-        $directory_id = intval( $_POST['directory_id'] ?? 0 );
+        $credentialing = sanitize_text_field( $_POST['credentialing'] ?? '' );
+        $type_id       = intval( $_POST['membership_type_id'] ?? 0 );
+        $directory_id  = intval( $_POST['directory_id'] ?? 0 );
 
         // AI enrichment
         $ai_data = [];
@@ -417,7 +451,7 @@ class AOS_MS_Admin {
             $ai_data = $gemini->enrich_listing( $contact, $contact['website'] );
         }
 
-        $post_id = AOS_MS_Listing_Creator::create_draft( $contact, $type_id, $ai_data, $directory_id );
+        $post_id = AOS_MS_Listing_Creator::create_draft( $contact, $credentialing, $ai_data, $directory_id );
         if ( is_wp_error( $post_id ) ) {
             wp_send_json_error( $post_id->get_error_message() );
         }

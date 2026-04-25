@@ -21,13 +21,13 @@ class AOS_MS_Listing_Creator {
     /**
      * Create a draft Directorist listing from CiviCRM contact + optional AI enrichment.
      *
-     * @param array  $contact          CiviCRM contact data
-     * @param int    $membership_type_id
-     * @param array  $ai_data          Optional Gemini enrichment output
-     * @param int    $directory_id     Directorist directory ID
+     * @param array  $contact        CiviCRM contact data
+     * @param string $credentialing  Pre-resolved credential label(s), e.g. 'Diplomate' or 'Fellowship, Diplomate'
+     * @param array  $ai_data        Optional Gemini enrichment output
+     * @param int    $directory_id   Directorist directory ID
      * @return int|WP_Error  Post ID on success.
      */
-    public static function create_draft( $contact, $membership_type_id = 0, $ai_data = [], $directory_id = 0 ) {
+    public static function create_draft( $contact, $credentialing = '', $ai_data = [], $directory_id = 0 ) {
         if ( ! $directory_id ) {
             $directory_id = (int) AOS_MS_Settings::get( 'provider_directory_id', 34 );
         }
@@ -36,9 +36,9 @@ class AOS_MS_Listing_Creator {
         $title = 'Dr. ' . $name;
         $title = preg_replace( '/^(Dr\.?\s+)+/i', 'Dr. ', $title );
 
-        $bio      = $ai_data['biography'] ?? '';
+        $bio       = $ai_data['biography'] ?? '';
         $specialty = $ai_data['specialty'] ?? '';
-        $credentialing = self::get_credentialing_level( $membership_type_id );
+        $credentialing = sanitize_text_field( $credentialing );
 
         $post_id = wp_insert_post( [
             'post_title'   => $title,

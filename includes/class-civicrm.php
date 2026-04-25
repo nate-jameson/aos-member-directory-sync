@@ -241,6 +241,40 @@ class AOS_MS_CiviCRM {
     }
 
     /**
+     * Get active credential memberships for specific contact IDs.
+     *
+     * Used to determine which credential badges (Achievement/Fellowship/Diplomate)
+     * each contact currently holds, independently of their base "member" type.
+     *
+     * @param int[] $contact_ids  Contact IDs to check.
+     * @param int[] $type_ids     Credential membership type IDs to look for.
+     * @return array|WP_Error     Map of contact_id (string) => int[] active type_ids.
+     */
+    public function get_credential_memberships( $contact_ids, $type_ids ) {
+        if ( empty( $contact_ids ) || empty( $type_ids ) ) return [];
+
+        $params = [
+            'sequential'         => 1,
+            'membership_type_id' => [ 'IN' => array_values( array_map( 'intval', $type_ids ) ) ],
+            'contact_id'         => [ 'IN' => array_values( array_map( 'intval', $contact_ids ) ) ],
+            'status_id'          => [ 'IN' => [ 1, 2, 3 ] ], // New, Current, Grace
+            'return'             => 'contact_id,membership_type_id',
+            'options'            => [ 'limit' => 0 ],
+        ];
+
+        $response = $this->request( 'Membership', 'get', $params );
+        if ( is_wp_error( $response ) ) return $response;
+
+        $map = [];
+        foreach ( $response as $m ) {
+            $cid = (string) $m['contact_id'];
+            if ( ! isset( $map[ $cid ] ) ) $map[ $cid ] = [];
+            $map[ $cid ][] = (int) $m['membership_type_id'];
+        }
+        return $map;
+    }
+
+    /**
      * Fetch contact details for a list of contact IDs.
      * Batches in chunks to avoid query limits.
      *
