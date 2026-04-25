@@ -58,8 +58,20 @@ class AOS_MS_CiviCRM {
         $data = json_decode( $body, true );
 
         if ( $code !== 200 ) {
-            $error_message = $data['error_message'] ?? ( 'HTTP ' . $code );
-            return new WP_Error( 'civicrm_error', $error_message, [ 'code' => $code, 'response' => $data ] );
+            // Surface as much detail as possible for debugging
+            if ( isset( $data['error_message'] ) ) {
+                $error_message = 'HTTP ' . $code . ' — ' . $data['error_message'];
+            } elseif ( isset( $data['message'] ) ) {
+                $error_message = 'HTTP ' . $code . ' — ' . $data['message'];
+            } elseif ( ! empty( $body ) ) {
+                // Strip HTML tags and trim to 200 chars for display
+                $stripped = trim( wp_strip_all_tags( $body ) );
+                $snippet  = $stripped ? substr( $stripped, 0, 200 ) : 'empty body';
+                $error_message = 'HTTP ' . $code . ' — ' . $snippet;
+            } else {
+                $error_message = 'HTTP ' . $code;
+            }
+            return new WP_Error( 'civicrm_error', $error_message, [ 'code' => $code, 'response' => $data, 'url' => $url ] );
         }
 
         if ( $data === null ) {
