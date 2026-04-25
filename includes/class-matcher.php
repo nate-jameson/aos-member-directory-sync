@@ -29,9 +29,9 @@ class AOS_MS_Matcher {
             foreach ( $ids as $pid ) {
                 // Directorist stores directory ID in 'directory_type' meta (native).
                 // Our plugin also writes '_atbdp_listing_type' as a fallback.
-                $dir_id = (int) get_post_meta( $pid, 'directory_type', true );
+                $dir_id = (int) get_post_meta( $pid, '_directory_type', true );
                 if ( ! $dir_id ) {
-                    $dir_id = (int) get_post_meta( $pid, '_atbdp_listing_type', true );
+                    $dir_id = (int) get_post_meta( $pid, 'directory_type', true );
                 }
                 $results[ $pid ] = [ 'post_id' => $pid, 'directory_id' => $dir_id, 'confidence' => 'high', 'method' => 'email' ];
             }
@@ -50,9 +50,9 @@ class AOS_MS_Matcher {
                 foreach ( $ids as $pid ) {
                     // Directorist stores directory ID in 'directory_type' meta (native).
                 // Our plugin also writes '_atbdp_listing_type' as a fallback.
-                $dir_id = (int) get_post_meta( $pid, 'directory_type', true );
+                $dir_id = (int) get_post_meta( $pid, '_directory_type', true );
                 if ( ! $dir_id ) {
-                    $dir_id = (int) get_post_meta( $pid, '_atbdp_listing_type', true );
+                    $dir_id = (int) get_post_meta( $pid, 'directory_type', true );
                 }
                     $results[ $pid ] = [ 'post_id' => $pid, 'directory_id' => $dir_id, 'confidence' => 'medium', 'method' => 'name' ];
                 }
@@ -68,7 +68,7 @@ class AOS_MS_Matcher {
 
         // Check _atbdp_email post meta (all matches)
         $meta_ids = $wpdb->get_col( $wpdb->prepare(
-            "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_atbdp_email' AND meta_value = %s",
+            "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_email' AND meta_value = %s",
             sanitize_email( $email )
         ) );
         foreach ( $meta_ids as $id ) $ids[] = (int) $id;
@@ -111,7 +111,7 @@ class AOS_MS_Matcher {
         global $wpdb;
         return $wpdb->get_col(
             "SELECT meta_value FROM {$wpdb->postmeta}
-             WHERE meta_key = '_atbdp_email'
+             WHERE meta_key = '_email'
              AND meta_value != ''"
         );
     }

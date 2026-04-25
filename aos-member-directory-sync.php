@@ -2,14 +2,14 @@
 /**
  * Plugin Name: AOS Member Directory Sync
  * Description: Syncs CiviCRM memberships with the Directorist member directory — deactivates expired listings and creates AI-enriched drafts for new members.
- * Version: 1.1.9
+ * Version: 1.2.0
  * Author: American Orthodontic Society
  * Text Domain: aos-member-directory-sync
  */
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
-define( 'AOS_MS_VERSION', '1.1.9' );
+define( 'AOS_MS_VERSION', '1.2.0' );
 define( 'AOS_MS_DIR', plugin_dir_path( __FILE__ ) );
 define( 'AOS_MS_URL', plugin_dir_url( __FILE__ ) );
 
