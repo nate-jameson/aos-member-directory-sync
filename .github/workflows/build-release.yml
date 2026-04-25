@@ -1,0 +1,98 @@
+name: Build Plugin Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: |
+          REPO_NAME="${GITHUB_REPOSITORY##*/}"
+          
+          # Find the main plugin file (contains "Plugin Name:" in header comment)
+          PLUGIN_FILE=$(grep -rl "Plugin Name:" *.php 2>/dev/null | head -1)
+          
+          if [ -z "$PLUGIN_FILE" ]; then
+            echo "::error::Could not find main plugin file with 'Plugin Name:' header"
+            exit 1
+          fi
+          
+          # Extract version — grab first "Version:" line, pull just the X.Y.Z number
+          VERSION=$(grep -m1 'Version:' "$PLUGIN_FILE" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+          
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not extract version from $PLUGIN_FILE"
+            exit 1
+          fi
+          
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "plugin_file=$PLUGIN_FILE" >> "$GITHUB_OUTPUT"
+          echo "repo_name=$REPO_NAME" >> "$GITHUB_OUTPUT"
+          echo "Detected version: $VERSION from $PLUGIN_FILE"
+
+      - name: Check if release exists
+        id: check
+        run: |
+          if gh release view "v${{ steps.version.outputs.version }}" &>/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release v${{ steps.version.outputs.version }} already exists, skipping."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build zip
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          REPO_NAME="${{ steps.version.outputs.repo_name }}"
+          VERSION="${{ steps.version.outputs.version }}"
+          
+          # Create clean plugin directory
+          mkdir -p "/tmp/${REPO_NAME}"
+          
+          # Copy plugin files (exclude git, github, and dev files)
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='.gitignore' \
+            --exclude='README.md' \
+            --exclude='.editorconfig' \
+            --exclude='phpcs.xml' \
+            --exclude='composer.json' \
+            --exclude='composer.lock' \
+            --exclude='package.json' \
+            --exclude='package-lock.json' \
+            --exclude='node_modules' \
+            --exclude='tests' \
+            --exclude='.phpunit*' \
+            ./ "/tmp/${REPO_NAME}/"
+          
+          # Create zip
+          cd /tmp
+          zip -r "${REPO_NAME}-v${VERSION}.zip" "${REPO_NAME}/"
+          echo "Built: ${REPO_NAME}-v${VERSION}.zip"
+          ls -lh "${REPO_NAME}-v${VERSION}.zip"
+
+      - name: Create release
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          REPO_NAME="${{ steps.version.outputs.repo_name }}"
+          VERSION="${{ steps.version.outputs.version }}"
+          
+          gh release create "v${VERSION}" \
+            "/tmp/${REPO_NAME}-v${VERSION}.zip" \
+            --title "v${VERSION}" \
+            --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
