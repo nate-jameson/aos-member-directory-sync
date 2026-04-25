@@ -361,6 +361,10 @@ class AOS_MS_Admin {
         $all_ids = array_unique( $all_ids );
 
         $memberships = $civi->get_active_memberships( $all_ids );
+        if ( is_wp_error( $memberships ) ) {
+            wp_send_json_error( 'CiviCRM query failed: ' . $memberships->get_error_message() );
+            return;
+        }
         if ( empty( $memberships ) ) {
             wp_send_json_success( [ 'rows' => [], 'message' => 'No active memberships found.' ] );
             return;

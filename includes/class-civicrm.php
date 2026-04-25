@@ -1,6 +1,14 @@
 <?php
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+/**
+ * CiviCRM API v3 REST client.
+ *
+ * Uses the WordPress REST endpoint /wp-json/civicrm/v3/rest, which authenticates
+ * via `key` (site key) and `api_key` (contact API key) query parameters.
+ * This matches the pattern used by the AOS CiviCRM R/W connection and has been
+ * confirmed to work for Membership, Contact, and other entities.
+ */
 class AOS_MS_CiviCRM {
 
     private $base_url;
@@ -18,36 +26,27 @@ class AOS_MS_CiviCRM {
     }
 
     /**
-     * Make a CiviCRM API v4 call.
-     * Matches the pattern used in aos-civicrm-sync.
+     * Make a CiviCRM API v3 REST call.
      *
      * @param string $entity  e.g. 'Membership', 'Contact'
-     * @param string $action  e.g. 'get', 'create'
-     * @param array  $params  API v4 params array
-     * @return array|WP_Error
+     * @param string $action  e.g. 'get', 'getsingle', 'create'
+     * @param array  $params  v3-style params (field => value, return, options, etc.)
+     * @return array|WP_Error  Returns the 'values' array on success.
      */
     public function request( $entity, $action, $params = [] ) {
         if ( ! $this->is_configured() ) {
-            return new WP_Error( 'not_configured', 'CiviCRM API is not configured' );
+            return new WP_Error( 'not_configured', 'CiviCRM API is not configured.' );
         }
 
-        if ( ! isset( $params['checkPermissions'] ) ) {
-            $params['checkPermissions'] = false;
-        }
+        $url = add_query_arg( [
+            'entity'  => $entity,
+            'action'  => $action,
+            'json'    => wp_json_encode( $params ),
+            'key'     => $this->site_key,
+            'api_key' => $this->api_key,
+        ], $this->base_url . '/wp-json/civicrm/v3/rest' );
 
-        $url = $this->base_url . '/civicrm/ajax/api4/' . $entity . '/' . $action;
-
-        $response = wp_remote_post( $url, [
-            'timeout' => 30,
-            'headers' => [
-                'X-Civi-Auth'  => 'Bearer ' . $this->api_key,
-                'X-Civi-Key'   => $this->site_key,
-                'Content-Type' => 'application/x-www-form-urlencoded',
-            ],
-            'body' => [
-                'params' => wp_json_encode( $params ),
-            ],
-        ] );
+        $response = wp_remote_get( $url, [ 'timeout' => 30 ] );
 
         if ( is_wp_error( $response ) ) {
             return $response;
@@ -58,36 +57,37 @@ class AOS_MS_CiviCRM {
         $data = json_decode( $body, true );
 
         if ( $code !== 200 ) {
-            // Surface as much detail as possible for debugging
             if ( isset( $data['error_message'] ) ) {
-                $error_message = 'HTTP ' . $code . ' — ' . $data['error_message'];
+                $msg = 'HTTP ' . $code . ' — ' . $data['error_message'];
             } elseif ( isset( $data['message'] ) ) {
-                $error_message = 'HTTP ' . $code . ' — ' . $data['message'];
-            } elseif ( ! empty( $body ) ) {
-                // Strip HTML tags and trim to 200 chars for display
-                $stripped = trim( wp_strip_all_tags( $body ) );
-                $snippet  = $stripped ? substr( $stripped, 0, 200 ) : 'empty body';
-                $error_message = 'HTTP ' . $code . ' — ' . $snippet;
+                $msg = 'HTTP ' . $code . ' — ' . $data['message'];
             } else {
-                $error_message = 'HTTP ' . $code;
+                $stripped = trim( wp_strip_all_tags( $body ) );
+                $msg = 'HTTP ' . $code . ( $stripped ? ' — ' . substr( $stripped, 0, 200 ) : '' );
             }
-            return new WP_Error( 'civicrm_error', $error_message, [ 'code' => $code, 'response' => $data, 'url' => $url ] );
+            return new WP_Error( 'civicrm_http_error', $msg, [ 'code' => $code, 'body' => substr( $body, 0, 500 ) ] );
         }
 
         if ( $data === null ) {
-            return new WP_Error( 'json_error', 'Failed to decode API response', [ 'body' => substr( $body, 0, 500 ) ] );
+            return new WP_Error( 'json_error', 'Failed to decode API response.', [ 'body' => substr( $body, 0, 500 ) ] );
         }
 
-        return $data['values'] ?? $data;
+        if ( ! empty( $data['is_error'] ) ) {
+            return new WP_Error( 'civicrm_api_error', $data['error_message'] ?? 'Unknown CiviCRM error.', $data );
+        }
+
+        return $data['values'] ?? [];
     }
 
     /**
-     * Test the connection.
+     * Test the connection by fetching one Contact.
+     *
+     * @return true|WP_Error
      */
     public function test_connection() {
         $result = $this->request( 'Contact', 'get', [
-            'limit'  => 1,
-            'select' => [ 'id' ],
+            'return'  => 'id',
+            'options' => [ 'limit' => 1 ],
         ] );
 
         if ( is_wp_error( $result ) ) {
@@ -99,68 +99,77 @@ class AOS_MS_CiviCRM {
 
     /**
      * Get expired memberships within the last N months.
-     * Returns memberships whose end_date has passed and status is Expired/Cancelled.
      *
-     * Uses numeric status IDs (4=Expired, 6=Cancelled, 7=Deceased) for reliable API v4 filtering.
-     * Optionally scopes to configured credentialing membership type IDs.
+     * Filters by end_date range and status IDs (4=Expired, 6=Cancelled, 7=Deceased).
+     * Scopes to configured credentialing type IDs if any are set in settings.
      *
+     * @param int $months  How far back to look (default 6).
      * @return array|WP_Error
      */
     public function get_expired_memberships( $months = 6 ) {
         $since = date( 'Y-m-d', strtotime( "-{$months} months" ) );
         $today = date( 'Y-m-d' );
 
-        $where = [
-            [ 'end_date', '>=', $since ],
-            [ 'end_date', '<=', $today ],
-            // Use numeric IDs: 4=Expired, 6=Cancelled, 7=Deceased
-            [ 'status_id', 'IN', [ 4, 6, 7 ] ],
+        $params = [
+            'status_id' => [ 'IN' => [ 4, 6, 7 ] ],
+            'end_date'  => [ '>=' => $since, '<=' => $today ],
+            'return'    => 'id,contact_id,membership_type_id,end_date,status_id',
+            'options'   => [ 'limit' => 1000 ],
         ];
 
-        // Scope to configured credentialing type IDs if any are set
-        $type_ids = array_filter( array_map( 'intval', [
-            AOS_MS_Settings::get( 'achievement_type_id' ),
-            AOS_MS_Settings::get( 'fellowship_type_id' ),
-            AOS_MS_Settings::get( 'diplomate_type_id' ),
-        ] ) );
+        // Scope to configured credentialing type IDs if set
+        // Collect all configured credentialing type IDs (matches settings keys in class-settings.php)
+        $type_ids = array_filter( array_map( 'intval', array_merge(
+            array_map( 'trim', explode( ',', AOS_MS_Settings::get( 'type_active', '' ) ) ),
+            array_map( 'trim', explode( ',', AOS_MS_Settings::get( 'type_achievement', '' ) ) ),
+            array_map( 'trim', explode( ',', AOS_MS_Settings::get( 'type_fellowship', '' ) ) ),
+            array_map( 'trim', explode( ',', AOS_MS_Settings::get( 'type_diplomate', '' ) ) )
+        ) ) );
         if ( ! empty( $type_ids ) ) {
-            $where[] = [ 'membership_type_id', 'IN', array_values( $type_ids ) ];
+            $params['membership_type_id'] = [ 'IN' => array_values( $type_ids ) ];
         }
 
-        $memberships = $this->request( 'Membership', 'get', [
-            'select' => [
-                'id',
-                'contact_id',
-                'membership_type_id',
-                'membership_type_id.name',
-                'end_date',
-                'status_id:name',
-                'contact_id.first_name',
-                'contact_id.last_name',
-                'contact_id.display_name',
-                'contact_id.email_primary.email',
-            ],
-            'where' => $where,
-            'limit' => 1000,
-        ] );
+        $memberships = $this->request( 'Membership', 'get', $params );
 
         if ( is_wp_error( $memberships ) ) {
-            return $memberships; // Surface the error instead of silently returning []
+            return $memberships;
         }
+
+        if ( empty( $memberships ) ) {
+            return [];
+        }
+
+        // Collect contact IDs and fetch contact details in one call
+        $contact_ids = array_unique( array_column( $memberships, 'contact_id' ) );
+        $contacts    = $this->get_contacts_by_ids( $contact_ids );
+        if ( is_wp_error( $contacts ) ) {
+            $contacts = [];
+        }
+        // Index by contact_id
+        $contacts_map = [];
+        foreach ( $contacts as $c ) {
+            $contacts_map[ $c['id'] ] = $c;
+        }
+
+        // Build status & type name maps
+        $status_map = $this->get_membership_status_map();
+        $type_map   = $this->get_membership_type_map();
 
         $result = [];
         foreach ( $memberships as $m ) {
+            $cid = $m['contact_id'];
+            $c   = $contacts_map[ $cid ] ?? [];
             $result[] = [
                 'membership_id'        => $m['id'],
-                'contact_id'           => $m['contact_id'],
+                'contact_id'           => $cid,
                 'membership_type_id'   => $m['membership_type_id'],
-                'membership_type_name' => $m['membership_type_id.name'] ?? '',
+                'membership_type_name' => $type_map[ $m['membership_type_id'] ] ?? $m['membership_type_id'],
                 'end_date'             => $m['end_date'],
-                'status'               => $m['status_id:name'] ?? '',
-                'first_name'           => $m['contact_id.first_name'] ?? '',
-                'last_name'            => $m['contact_id.last_name'] ?? '',
-                'display_name'         => $m['contact_id.display_name'] ?? '',
-                'email'                => $m['contact_id.email_primary.email'] ?? '',
+                'status'               => $status_map[ $m['status_id'] ] ?? $m['status_id'],
+                'first_name'           => $c['first_name'] ?? '',
+                'last_name'            => $c['last_name'] ?? '',
+                'display_name'         => $c['display_name'] ?? '',
+                'email'                => $c['email'] ?? '',
             ];
         }
 
@@ -169,65 +178,137 @@ class AOS_MS_CiviCRM {
 
     /**
      * Get active memberships, optionally filtered by type IDs.
+     *
+     * @param int[] $type_ids  Optional membership type IDs to filter by.
+     * @return array|WP_Error
      */
     public function get_active_memberships( $type_ids = [] ) {
-        $where = [
-            [ 'status_id:name', 'IN', [ 'New', 'Current', 'Grace' ] ],
+        // Status IDs: 1=New, 2=Current, 3=Grace
+        $params = [
+            'status_id' => [ 'IN' => [ 1, 2, 3 ] ],
+            'return'    => 'id,contact_id,membership_type_id,end_date,status_id',
+            'options'   => [ 'limit' => 2000 ],
         ];
 
         if ( ! empty( $type_ids ) ) {
-            $where[] = [ 'membership_type_id', 'IN', array_map( 'intval', $type_ids ) ];
+            $params['membership_type_id'] = [ 'IN' => array_map( 'intval', $type_ids ) ];
         }
 
-        $memberships = $this->request( 'Membership', 'get', [
-            'select' => [
-                'id',
-                'contact_id',
-                'membership_type_id',
-                'membership_type_id.name',
-                'end_date',
-                'status_id:name',
-                'contact_id.first_name',
-                'contact_id.last_name',
-                'contact_id.display_name',
-                'contact_id.email_primary.email',
-                'contact_id.address_primary.street_address',
-                'contact_id.address_primary.city',
-                'contact_id.address_primary.state_province_id:label',
-                'contact_id.address_primary.postal_code',
-                'contact_id.phone_primary.phone',
-                'contact_id.website_primary.url',
-            ],
-            'where'  => $where,
-            'limit'  => 2000,
-        ] );
+        $memberships = $this->request( 'Membership', 'get', $params );
 
         if ( is_wp_error( $memberships ) ) {
+            return $memberships;
+        }
+
+        if ( empty( $memberships ) ) {
             return [];
         }
 
+        // Fetch contact details
+        $contact_ids  = array_unique( array_column( $memberships, 'contact_id' ) );
+        $contacts     = $this->get_contacts_by_ids( $contact_ids );
+        if ( is_wp_error( $contacts ) ) {
+            $contacts = [];
+        }
+        $contacts_map = [];
+        foreach ( $contacts as $c ) {
+            $contacts_map[ $c['id'] ] = $c;
+        }
+
+        $status_map = $this->get_membership_status_map();
+        $type_map   = $this->get_membership_type_map();
+
         $result = [];
         foreach ( $memberships as $m ) {
+            $cid = $m['contact_id'];
+            $c   = $contacts_map[ $cid ] ?? [];
             $result[] = [
                 'membership_id'        => $m['id'],
-                'contact_id'           => $m['contact_id'],
+                'contact_id'           => $cid,
                 'membership_type_id'   => $m['membership_type_id'],
-                'membership_type_name' => $m['membership_type_id.name'] ?? '',
+                'membership_type_name' => $type_map[ $m['membership_type_id'] ] ?? $m['membership_type_id'],
                 'end_date'             => $m['end_date'],
-                'status'               => $m['status_id:name'] ?? '',
-                'first_name'           => $m['contact_id.first_name'] ?? '',
-                'last_name'            => $m['contact_id.last_name'] ?? '',
-                'display_name'         => $m['contact_id.display_name'] ?? '',
-                'email'                => $m['contact_id.email_primary.email'] ?? '',
-                'street_address'       => $m['contact_id.address_primary.street_address'] ?? '',
-                'city'                 => $m['contact_id.address_primary.city'] ?? '',
-                'state'                => $m['contact_id.address_primary.state_province_id:label'] ?? '',
-                'postal_code'          => $m['contact_id.address_primary.postal_code'] ?? '',
-                'phone'                => $m['contact_id.phone_primary.phone'] ?? '',
-                'website'              => $m['contact_id.website_primary.url'] ?? '',
+                'status'               => $status_map[ $m['status_id'] ] ?? $m['status_id'],
+                'first_name'           => $c['first_name'] ?? '',
+                'last_name'            => $c['last_name'] ?? '',
+                'display_name'         => $c['display_name'] ?? '',
+                'email'                => $c['email'] ?? '',
+                'street_address'       => $c['street_address'] ?? '',
+                'city'                 => $c['city'] ?? '',
+                'state'                => $c['state_province'] ?? '',
+                'postal_code'          => $c['postal_code'] ?? '',
+                'phone'                => $c['phone'] ?? '',
+                'website'              => $c['website'] ?? '',
             ];
         }
 
         return $result;
+    }
+
+    /**
+     * Fetch contact details for a list of contact IDs.
+     * Batches in chunks to avoid query limits.
+     *
+     * @param int[] $ids
+     * @return array|WP_Error
+     */
+    private function get_contacts_by_ids( $ids ) {
+        if ( empty( $ids ) ) {
+            return [];
+        }
+
+        $all = [];
+        foreach ( array_chunk( $ids, 100 ) as $chunk ) {
+            $result = $this->request( 'Contact', 'get', [
+                'id'      => [ 'IN' => $chunk ],
+                'return'  => 'id,first_name,last_name,display_name,email,street_address,city,state_province,postal_code,phone,website',
+                'options' => [ 'limit' => count( $chunk ) ],
+            ] );
+            if ( ! is_wp_error( $result ) ) {
+                foreach ( $result as $c ) {
+                    $all[] = $c;
+                }
+            }
+        }
+
+        return $all;
+    }
+
+    /**
+     * Returns a map of status_id => status_name.
+     *
+     * @return array
+     */
+    private function get_membership_status_map() {
+        $result = $this->request( 'MembershipStatus', 'get', [
+            'return'  => 'id,name',
+            'options' => [ 'limit' => 50 ],
+        ] );
+        $map = [];
+        if ( ! is_wp_error( $result ) ) {
+            foreach ( $result as $s ) {
+                $map[ $s['id'] ] = $s['name'];
+            }
+        }
+        return $map;
+    }
+
+    /**
+     * Returns a map of membership_type_id => type_name.
+     *
+     * @return array
+     */
+    private function get_membership_type_map() {
+        $result = $this->request( 'MembershipType', 'get', [
+            'return'  => 'id,name',
+            'options' => [ 'limit' => 50 ],
+        ] );
+        $map = [];
+        if ( ! is_wp_error( $result ) ) {
+            foreach ( $result as $t ) {
+                $map[ $t['id'] ] = $t['name'];
+            }
+        }
+        return $map;
     }
 }
