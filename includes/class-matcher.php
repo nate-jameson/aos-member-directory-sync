@@ -27,7 +27,16 @@ class AOS_MS_Matcher {
         if ( ! empty( $contact['email'] ) ) {
             $ids = self::find_all_by_email( $contact['email'] );
             foreach ( $ids as $pid ) {
+                // Try post meta first (listings created by our plugin),
+                // then fall back to the atbdp_listing_type taxonomy slug
+                // (Directorist stores directory as a term with slug = directory post ID)
                 $dir_id = (int) get_post_meta( $pid, '_atbdp_listing_type', true );
+                if ( ! $dir_id ) {
+                    $terms = wp_get_object_terms( $pid, 'atbdp_listing_type', [ 'fields' => 'slugs' ] );
+                    if ( ! empty( $terms ) && ! is_wp_error( $terms ) ) {
+                        $dir_id = (int) $terms[0];
+                    }
+                }
                 $results[ $pid ] = [ 'post_id' => $pid, 'directory_id' => $dir_id, 'confidence' => 'high', 'method' => 'email' ];
             }
         }
@@ -43,7 +52,16 @@ class AOS_MS_Matcher {
             if ( $name ) {
                 $ids = self::find_all_by_name( $name );
                 foreach ( $ids as $pid ) {
-                    $dir_id = (int) get_post_meta( $pid, '_atbdp_listing_type', true );
+                    // Try post meta first (listings created by our plugin),
+                // then fall back to the atbdp_listing_type taxonomy slug
+                // (Directorist stores directory as a term with slug = directory post ID)
+                $dir_id = (int) get_post_meta( $pid, '_atbdp_listing_type', true );
+                if ( ! $dir_id ) {
+                    $terms = wp_get_object_terms( $pid, 'atbdp_listing_type', [ 'fields' => 'slugs' ] );
+                    if ( ! empty( $terms ) && ! is_wp_error( $terms ) ) {
+                        $dir_id = (int) $terms[0];
+                    }
+                }
                     $results[ $pid ] = [ 'post_id' => $pid, 'directory_id' => $dir_id, 'confidence' => 'medium', 'method' => 'name' ];
                 }
             }
