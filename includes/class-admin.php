@@ -1,0 +1,474 @@
+<?php
+if ( ! defined( 'ABSPATH' ) ) exit;
+
+class AOS_MS_Admin {
+
+    public function __construct() {
+        add_action( 'admin_menu',             [ $this, 'register_menu' ] );
+        add_action( 'admin_enqueue_scripts',  [ $this, 'enqueue_assets' ] );
+        add_action( 'wp_ajax_aos_ms_save_settings',     [ $this, 'ajax_save_settings' ] );
+        add_action( 'wp_ajax_aos_ms_test_civicrm',      [ $this, 'ajax_test_civicrm' ] );
+        add_action( 'wp_ajax_aos_ms_load_expired',      [ $this, 'ajax_load_expired' ] );
+        add_action( 'wp_ajax_aos_ms_deactivate_listing',[ $this, 'ajax_deactivate_listing' ] );
+        add_action( 'wp_ajax_aos_ms_deactivate_bulk',   [ $this, 'ajax_deactivate_bulk' ] );
+        add_action( 'wp_ajax_aos_ms_load_new_members',  [ $this, 'ajax_load_new_members' ] );
+        add_action( 'wp_ajax_aos_ms_create_draft',      [ $this, 'ajax_create_draft' ] );
+        add_action( 'wp_ajax_aos_ms_create_all_drafts', [ $this, 'ajax_create_all_drafts' ] );
+    }
+
+    public function register_menu() {
+        add_menu_page(
+            'AOS Member Directory Sync',
+            'Member Sync',
+            'manage_options',
+            'aos-member-directory-sync',
+            [ $this, 'render_page' ],
+            'dashicons-update',
+            56
+        );
+    }
+
+    public function enqueue_assets( $hook ) {
+        if ( strpos( $hook, 'aos-member-directory-sync' ) === false ) return;
+        wp_enqueue_style( 'aos-ms-style', AOS_MS_URL . 'assets/admin.css', [], AOS_MS_VERSION );
+        wp_enqueue_script( 'aos-ms-script', AOS_MS_URL . 'assets/admin.js', [ 'jquery' ], AOS_MS_VERSION, true );
+        wp_localize_script( 'aos-ms-script', 'aosMsData', [
+            'nonce'   => wp_create_nonce( 'aos_ms_nonce' ),
+            'ajaxurl' => admin_url( 'admin-ajax.php' ),
+        ] );
+    }
+
+    public function render_page() {
+        $tab = isset( $_GET['tab'] ) ? sanitize_key( $_GET['tab'] ) : 'settings';
+        $tabs = [
+            'settings'    => 'Settings',
+            'sync'        => 'Sync Expired Members',
+            'new_members' => 'New Members',
+        ];
+        ?>
+        <div class="wrap aos-ms-wrap">
+            <h1>
+                <span class="dashicons dashicons-update"></span>
+                AOS Member Directory Sync
+            </h1>
+            <nav class="nav-tab-wrapper">
+                <?php foreach ( $tabs as $slug => $label ) : ?>
+                    <a href="?page=aos-member-directory-sync&tab=<?php echo esc_attr( $slug ); ?>"
+                       class="nav-tab <?php echo $tab === $slug ? 'nav-tab-active' : ''; ?>">
+                        <?php echo esc_html( $label ); ?>
+                    </a>
+                <?php endforeach; ?>
+            </nav>
+            <div class="aos-ms-tab-content">
+                <?php
+                if ( $tab === 'settings' )    $this->render_settings_tab();
+                elseif ( $tab === 'sync' )    $this->render_sync_tab();
+                elseif ( $tab === 'new_members' ) $this->render_new_members_tab();
+                ?>
+            </div>
+        </div>
+        <?php
+    }
+
+    /* ─── SETTINGS TAB ──────────────────────────────────────────────── */
+
+    private function render_settings_tab() {
+        $sections = AOS_MS_Settings::fields();
+        ?>
+        <form id="aos-ms-settings-form">
+            <?php foreach ( $sections as $section_key => $section ) : ?>
+                <div class="aos-ms-card">
+                    <h2><?php echo esc_html( $section['label'] ); ?></h2>
+                    <?php if ( ! empty( $section['desc'] ) ) : ?>
+                        <p class="description"><?php echo esc_html( $section['desc'] ); ?></p>
+                    <?php endif; ?>
+                    <table class="form-table">
+                        <?php foreach ( $section['fields'] as $key => $field ) : ?>
+                            <tr>
+                                <th><label for="<?php echo esc_attr( $key ); ?>"><?php echo esc_html( $field['label'] ); ?></label></th>
+                                <td>
+                                    <input
+                                        type="<?php echo esc_attr( $field['type'] ); ?>"
+                                        id="<?php echo esc_attr( $key ); ?>"
+                                        name="<?php echo esc_attr( $key ); ?>"
+                                        value="<?php echo esc_attr( AOS_MS_Settings::get( $key, $field['default'] ?? '' ) ); ?>"
+                                        placeholder="<?php echo esc_attr( $field['placeholder'] ?? '' ); ?>"
+                                        class="regular-text"
+                                    />
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </table>
+                </div>
+            <?php endforeach; ?>
+
+            <div class="aos-ms-actions">
+                <button type="submit" class="button button-primary">Save Settings</button>
+                <button type="button" id="aos-ms-test-civicrm" class="button">Test CiviCRM Connection</button>
+                <span id="aos-ms-settings-status" class="aos-ms-status"></span>
+            </div>
+        </form>
+        <?php
+    }
+
+    /* ─── SYNC EXPIRED TAB ──────────────────────────────────────────── */
+
+    private function render_sync_tab() {
+        $months = (int) AOS_MS_Settings::get( 'expired_lookback_months', 6 );
+        ?>
+        <div class="aos-ms-card">
+            <h2>Deactivate Listings for Expired Members</h2>
+            <p>
+                Finds CiviCRM memberships that expired in the last <strong><?php echo $months; ?> months</strong>,
+                matches them to directory listings, and sets matched listings to <strong>Draft</strong> (inactive).
+            </p>
+            <p class="description">Listings without a confident match are shown for manual review and are <em>not</em> automatically changed.</p>
+            <div class="aos-ms-actions">
+                <button id="aos-ms-load-expired" class="button button-primary">
+                    <span class="dashicons dashicons-search"></span> Load Expired Members
+                </button>
+                <span id="aos-ms-sync-status" class="aos-ms-status"></span>
+            </div>
+        </div>
+
+        <div id="aos-ms-expired-results" style="display:none;">
+            <div class="aos-ms-card">
+                <div class="aos-ms-table-header">
+                    <h3 id="aos-ms-expired-count"></h3>
+                    <div>
+                        <button id="aos-ms-deactivate-all" class="button button-primary" style="display:none;">
+                            Deactivate All Matched Listings
+                        </button>
+                    </div>
+                </div>
+                <table id="aos-ms-expired-table" class="wp-list-table widefat fixed striped">
+                    <thead>
+                        <tr>
+                            <th class="check-column"><input type="checkbox" id="aos-ms-select-all"></th>
+                            <th>CiviCRM Member</th>
+                            <th>Email</th>
+                            <th>Membership Type</th>
+                            <th>Expired</th>
+                            <th>Matched Listing</th>
+                            <th>Confidence</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="aos-ms-expired-tbody">
+                        <tr><td colspan="8">Loading…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <?php
+    }
+
+    /* ─── NEW MEMBERS TAB ───────────────────────────────────────────── */
+
+    private function render_new_members_tab() {
+        ?>
+        <div class="aos-ms-card">
+            <h2>Active Members Without Listings</h2>
+            <p>
+                Finds CiviCRM contacts with an <strong>active or grace</strong> membership who don't yet have a directory listing.
+                You can create AI-enriched draft listings for any or all of them for your team to review, complete, and publish.
+            </p>
+            <div class="aos-ms-actions">
+                <button id="aos-ms-load-new" class="button button-primary">
+                    <span class="dashicons dashicons-search"></span> Load New Members
+                </button>
+                <span id="aos-ms-new-status" class="aos-ms-status"></span>
+            </div>
+        </div>
+
+        <div id="aos-ms-new-results" style="display:none;">
+            <div class="aos-ms-card">
+                <div class="aos-ms-table-header">
+                    <h3 id="aos-ms-new-count"></h3>
+                    <div>
+                        <button id="aos-ms-create-all-drafts" class="button button-primary" style="display:none;">
+                            <span class="dashicons dashicons-edit"></span> Create All Drafts (AI Enriched)
+                        </button>
+                    </div>
+                </div>
+                <table id="aos-ms-new-table" class="wp-list-table widefat fixed striped">
+                    <thead>
+                        <tr>
+                            <th class="check-column"><input type="checkbox" id="aos-ms-select-all-new"></th>
+                            <th>Name</th>
+                            <th>Email</th>
+                            <th>Membership</th>
+                            <th>Credentialing</th>
+                            <th>Location</th>
+                            <th>Website</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="aos-ms-new-tbody">
+                        <tr><td colspan="8">Loading…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <?php
+    }
+
+    /* ─── AJAX HANDLERS ─────────────────────────────────────────────── */
+
+    private function verify_nonce() {
+        if ( ! check_ajax_referer( 'aos_ms_nonce', 'nonce', false ) || ! current_user_can( 'manage_options' ) ) {
+            wp_send_json_error( 'Unauthorized' );
+        }
+    }
+
+    public function ajax_save_settings() {
+        $this->verify_nonce();
+        $all_fields = [];
+        foreach ( AOS_MS_Settings::fields() as $section ) {
+            foreach ( $section['fields'] as $key => $def ) {
+                $all_fields[] = $key;
+            }
+        }
+        $data = [];
+        foreach ( $all_fields as $key ) {
+            if ( isset( $_POST[ $key ] ) ) {
+                $data[ $key ] = sanitize_text_field( $_POST[ $key ] );
+            }
+        }
+        AOS_MS_Settings::save( $data );
+        wp_send_json_success( 'Settings saved.' );
+    }
+
+    public function ajax_test_civicrm() {
+        $this->verify_nonce();
+        $civi = new AOS_MS_CiviCRM();
+        if ( ! $civi->is_configured() ) {
+            wp_send_json_error( 'CiviCRM is not configured. Please fill in the connection settings.' );
+        }
+        $result = $civi->test_connection();
+        if ( is_wp_error( $result ) ) {
+            wp_send_json_error( $result->get_error_message() );
+        }
+        wp_send_json_success( 'Connection successful!' );
+    }
+
+    public function ajax_load_expired() {
+        $this->verify_nonce();
+        $civi   = new AOS_MS_CiviCRM();
+        $months = (int) AOS_MS_Settings::get( 'expired_lookback_months', 6 );
+
+        if ( ! $civi->is_configured() ) {
+            wp_send_json_error( 'CiviCRM not configured.' );
+        }
+
+        $memberships = $civi->get_expired_memberships( $months );
+        if ( empty( $memberships ) ) {
+            wp_send_json_success( [ 'rows' => [], 'message' => 'No expired memberships found in the last ' . $months . ' months.' ] );
+            return;
+        }
+
+        $rows = [];
+        foreach ( $memberships as $m ) {
+            $match = AOS_MS_Matcher::find_listing( $m );
+
+            $listing_label = '—';
+            $listing_url   = '';
+            $edit_url      = '';
+            if ( $match ) {
+                $post          = get_post( $match['post_id'] );
+                $listing_label = $post ? $post->post_title : 'Post #' . $match['post_id'];
+                $edit_url      = admin_url( 'post.php?post=' . $match['post_id'] . '&action=edit' );
+                $current_status = $post ? $post->post_status : 'unknown';
+            }
+
+            $rows[] = [
+                'contact_id'         => $m['contact_id'] ?? '',
+                'display_name'       => $m['display_name'] ?? '',
+                'email'              => $m['email'] ?? '',
+                'membership_type_id' => $m['membership_type_id'] ?? '',
+                'end_date'           => $m['end_date'] ?? '',
+                'listing_post_id'    => $match ? $match['post_id'] : 0,
+                'listing_label'      => $listing_label,
+                'listing_edit_url'   => $edit_url,
+                'listing_status'     => $match ? ( get_post_status( $match['post_id'] ) ?: 'unknown' ) : '',
+                'confidence'         => $match ? $match['confidence'] : 'none',
+                'match_method'       => $match ? $match['method'] : '',
+            ];
+        }
+
+        wp_send_json_success( [ 'rows' => $rows ] );
+    }
+
+    public function ajax_deactivate_listing() {
+        $this->verify_nonce();
+        $post_id = (int) ( $_POST['post_id'] ?? 0 );
+        if ( ! $post_id ) wp_send_json_error( 'Invalid post ID.' );
+
+        $result = AOS_MS_Listing_Creator::deactivate( $post_id );
+        if ( is_wp_error( $result ) ) wp_send_json_error( $result->get_error_message() );
+
+        wp_send_json_success( [ 'post_id' => $post_id, 'message' => 'Listing set to draft.' ] );
+    }
+
+    public function ajax_deactivate_bulk() {
+        $this->verify_nonce();
+        $post_ids = array_map( 'intval', $_POST['post_ids'] ?? [] );
+        if ( empty( $post_ids ) ) wp_send_json_error( 'No IDs provided.' );
+
+        $deactivated = 0;
+        $errors      = [];
+        foreach ( $post_ids as $id ) {
+            $result = AOS_MS_Listing_Creator::deactivate( $id );
+            if ( is_wp_error( $result ) ) {
+                $errors[] = $id;
+            } else {
+                $deactivated++;
+            }
+        }
+
+        wp_send_json_success( [
+            'deactivated' => $deactivated,
+            'errors'      => $errors,
+            'message'     => "Deactivated {$deactivated} listings." . ( $errors ? ' Errors on IDs: ' . implode( ', ', $errors ) : '' ),
+        ] );
+    }
+
+    public function ajax_load_new_members() {
+        $this->verify_nonce();
+        $civi = new AOS_MS_CiviCRM();
+        if ( ! $civi->is_configured() ) wp_send_json_error( 'CiviCRM not configured.' );
+
+        // Get all active membership type IDs from settings
+        $active_raw  = AOS_MS_Settings::get( 'type_active', '' );
+        $achieve_raw = AOS_MS_Settings::get( 'type_achievement', '' );
+        $fellow_raw  = AOS_MS_Settings::get( 'type_fellowship', '' );
+        $diplo_raw   = AOS_MS_Settings::get( 'type_diplomate', '' );
+
+        $all_ids = [];
+        foreach ( [ $active_raw, $achieve_raw, $fellow_raw, $diplo_raw ] as $raw ) {
+            foreach ( explode( ',', $raw ) as $id ) {
+                $id = trim( $id );
+                if ( is_numeric( $id ) ) $all_ids[] = (int) $id;
+            }
+        }
+        $all_ids = array_unique( $all_ids );
+
+        $memberships = $civi->get_active_memberships( $all_ids );
+        if ( empty( $memberships ) ) {
+            wp_send_json_success( [ 'rows' => [], 'message' => 'No active memberships found.' ] );
+            return;
+        }
+
+        // Filter to only those WITHOUT a listing
+        $rows = [];
+        $seen_contacts = [];
+        foreach ( $memberships as $m ) {
+            $cid = $m['contact_id'];
+            if ( in_array( $cid, $seen_contacts ) ) continue; // dedupe contacts
+            $match = AOS_MS_Matcher::find_listing( $m );
+            if ( $match ) continue; // already has a listing
+
+            $seen_contacts[] = $cid;
+            $rows[] = [
+                'contact_id'         => $cid,
+                'display_name'       => $m['display_name'] ?? '',
+                'email'              => $m['email'] ?? '',
+                'membership_type_id' => $m['membership_type_id'] ?? '',
+                'credentialing'      => AOS_MS_Listing_Creator::get_credentialing_level( $m['membership_type_id'] ?? 0 ),
+                'city'               => $m['city'] ?? '',
+                'state_province'     => $m['state_province'] ?? '',
+                'website'            => $m['website'] ?? '',
+                'phone'              => $m['phone'] ?? '',
+                'street_address'     => $m['street_address'] ?? '',
+                'postal_code'        => $m['postal_code'] ?? '',
+                'first_name'         => $m['first_name'] ?? '',
+                'last_name'          => $m['last_name'] ?? '',
+            ];
+        }
+
+        wp_send_json_success( [ 'rows' => $rows ] );
+    }
+
+    public function ajax_create_draft() {
+        $this->verify_nonce();
+
+        $contact = [
+            'id'             => intval( $_POST['contact_id'] ?? 0 ),
+            'display_name'   => sanitize_text_field( $_POST['display_name'] ?? '' ),
+            'email'          => sanitize_email( $_POST['email'] ?? '' ),
+            'phone'          => sanitize_text_field( $_POST['phone'] ?? '' ),
+            'website'        => esc_url_raw( $_POST['website'] ?? '' ),
+            'first_name'     => sanitize_text_field( $_POST['first_name'] ?? '' ),
+            'last_name'      => sanitize_text_field( $_POST['last_name'] ?? '' ),
+            'street_address' => sanitize_text_field( $_POST['street_address'] ?? '' ),
+            'postal_code'    => sanitize_text_field( $_POST['postal_code'] ?? '' ),
+            'city'           => sanitize_text_field( $_POST['city'] ?? '' ),
+            'state_province' => sanitize_text_field( $_POST['state_province'] ?? '' ),
+        ];
+        $type_id = intval( $_POST['membership_type_id'] ?? 0 );
+
+        // AI enrichment
+        $ai_data = [];
+        $gemini  = new AOS_MS_Gemini();
+        if ( $gemini->is_configured() ) {
+            $ai_data = $gemini->enrich_listing( $contact, $contact['website'] );
+        }
+
+        $post_id = AOS_MS_Listing_Creator::create_draft( $contact, $type_id, $ai_data );
+        if ( is_wp_error( $post_id ) ) {
+            wp_send_json_error( $post_id->get_error_message() );
+        }
+
+        wp_send_json_success( [
+            'post_id'   => $post_id,
+            'edit_url'  => admin_url( 'post.php?post=' . $post_id . '&action=edit' ),
+            'ai_conf'   => $ai_data['confidence'] ?? 'none',
+            'message'   => 'Draft created.',
+        ] );
+    }
+
+    public function ajax_create_all_drafts() {
+        $this->verify_nonce();
+        $contacts = json_decode( stripslashes( $_POST['contacts'] ?? '[]' ), true );
+        if ( empty( $contacts ) ) wp_send_json_error( 'No contacts provided.' );
+
+        $created = 0;
+        $errors  = [];
+        $gemini  = new AOS_MS_Gemini();
+
+        foreach ( $contacts as $c ) {
+            $contact = [
+                'id'             => intval( $c['contact_id'] ?? 0 ),
+                'display_name'   => sanitize_text_field( $c['display_name'] ?? '' ),
+                'email'          => sanitize_email( $c['email'] ?? '' ),
+                'phone'          => sanitize_text_field( $c['phone'] ?? '' ),
+                'website'        => esc_url_raw( $c['website'] ?? '' ),
+                'first_name'     => sanitize_text_field( $c['first_name'] ?? '' ),
+                'last_name'      => sanitize_text_field( $c['last_name'] ?? '' ),
+                'street_address' => sanitize_text_field( $c['street_address'] ?? '' ),
+                'postal_code'    => sanitize_text_field( $c['postal_code'] ?? '' ),
+                'city'           => sanitize_text_field( $c['city'] ?? '' ),
+                'state_province' => sanitize_text_field( $c['state_province'] ?? '' ),
+            ];
+            $type_id = intval( $c['membership_type_id'] ?? 0 );
+
+            $ai_data = [];
+            if ( $gemini->is_configured() ) {
+                $ai_data = $gemini->enrich_listing( $contact, $contact['website'] );
+            }
+
+            $post_id = AOS_MS_Listing_Creator::create_draft( $contact, $type_id, $ai_data );
+            if ( is_wp_error( $post_id ) ) {
+                $errors[] = ( $contact['display_name'] ?: 'Contact ' . $contact['id'] ) . ': ' . $post_id->get_error_message();
+            } else {
+                $created++;
+            }
+        }
+
+        wp_send_json_success( [
+            'created' => $created,
+            'errors'  => $errors,
+            'message' => "Created {$created} draft listings." . ( $errors ? ' Errors: ' . implode( '; ', array_slice( $errors, 0, 3 ) ) : '' ),
+        ] );
+    }
+}
