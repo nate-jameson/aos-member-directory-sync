@@ -201,6 +201,9 @@ class AOS_MS_Admin {
                             <th>Name</th>
                             <th>Email</th>
                             <th>Membership</th>
+                            <th>Start</th>
+                            <th>End</th>
+                            <th>Status</th>
                             <th>Credentialing</th>
                             <th>Location</th>
                             <th>Website</th>
@@ -209,7 +212,7 @@ class AOS_MS_Admin {
                         </tr>
                     </thead>
                     <tbody id="aos-ms-new-tbody">
-                        <tr><td colspan="9">Loading…</td></tr>
+                        <tr><td colspan="12">Loading…</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -427,6 +430,10 @@ class AOS_MS_Admin {
                 'display_name'       => $m['display_name'] ?? '',
                 'email'              => $m['email'] ?? '',
                 'membership_type_id' => $m['membership_type_id'] ?? '',
+                'membership_type_name' => $m['membership_type_name'] ?? '',
+                'start_date'         => $m['start_date'] ?? '',
+                'end_date'           => $m['end_date'] ?? '',
+                'status'             => $m['status'] ?? '',
                 'credentialing'      => '', // populated below via second query
                 'city'               => $m['city'] ?? '',
                 'state_province'     => $m['state'] ?? $m['state_province'] ?? '',

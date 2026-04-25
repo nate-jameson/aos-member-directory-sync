@@ -216,12 +216,20 @@ jQuery(function($) {
             var provBtn = '<button class="button button-small aos-ms-btn-create" data-idx="' + i + '" data-dir="' + provDir + '" data-col="provider">+ Create</button>';
             var pracBtn = '<button class="button button-small aos-ms-btn-create" data-idx="' + i + '" data-dir="' + pracDir + '" data-col="practice">+ Create</button>';
 
+            var memType   = r.membership_type_name || r.membership_type_id || '—';
+            var startDate = r.start_date ? r.start_date.replace(' 00:00:00', '') : '—';
+            var endDate   = r.end_date   ? r.end_date.replace(' 00:00:00', '')   : '—';
+            var memStatus = r.status || '—';
+
             tbody.append(
                 '<tr id="aos-ms-new-row-' + i + '" data-idx="' + i + '">' +
                 '<td><input type="checkbox" class="aos-ms-check-new" value="' + i + '"></td>' +
                 '<td>' + escHtml(r.display_name) + '</td>' +
                 '<td>' + escHtml(r.email) + '</td>' +
-                '<td>' + escHtml(r.membership_type_id) + '</td>' +
+                '<td>' + escHtml(memType) + '</td>' +
+                '<td>' + escHtml(startDate) + '</td>' +
+                '<td>' + escHtml(endDate) + '</td>' +
+                '<td>' + escHtml(memStatus) + '</td>' +
                 '<td>' + (r.credentialing ? '<strong>' + escHtml(r.credentialing) + '</strong>' : '—') + '</td>' +
                 '<td>' + escHtml(loc) + '</td>' +
                 '<td>' + web + '</td>' +

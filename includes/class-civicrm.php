@@ -181,7 +181,7 @@ class AOS_MS_CiviCRM {
         // Status IDs: 1=New, 2=Current, 3=Grace
         $params = [
             'status_id' => [ 'IN' => [ 1, 2, 3 ] ],
-            'return'    => 'id,contact_id,membership_type_id,end_date,status_id',
+            'return'    => 'id,contact_id,membership_type_id,start_date,end_date,status_id',
             'options'   => [ 'limit' => 2000 ],
         ];
 
@@ -222,6 +222,7 @@ class AOS_MS_CiviCRM {
                 'contact_id'           => $cid,
                 'membership_type_id'   => $m['membership_type_id'],
                 'membership_type_name' => $type_map[ $m['membership_type_id'] ] ?? $m['membership_type_id'],
+                'start_date'           => $m['start_date'] ?? '',
                 'end_date'             => $m['end_date'],
                 'status'               => $status_map[ $m['status_id'] ] ?? $m['status_id'],
                 'first_name'           => $c['first_name'] ?? '',
