@@ -1,16 +1,16 @@
 <?php
 if ( ! defined( 'ABSPATH' ) ) exit;
 
-class AOS_MDS_CiviCRM {
+class AOS_MS_CiviCRM {
 
     private $base_url;
     private $site_key;
     private $api_key;
 
     public function __construct() {
-        $this->base_url = rtrim( AOS_MDS_Settings::get( 'civicrm_base_url' ), '/' );
-        $this->site_key = AOS_MDS_Settings::get( 'civicrm_site_key' );
-        $this->api_key  = AOS_MDS_Settings::get( 'civicrm_api_key' );
+        $this->base_url = rtrim( AOS_MS_Settings::get( 'civicrm_base_url' ), '/' );
+        $this->site_key = AOS_MS_Settings::get( 'civicrm_site_key' );
+        $this->api_key  = AOS_MS_Settings::get( 'civicrm_api_key' );
     }
 
     public function is_configured() {
