@@ -100,10 +100,32 @@ class AOS_MS_CiviCRM {
     /**
      * Get expired memberships within the last N months.
      * Returns memberships whose end_date has passed and status is Expired/Cancelled.
+     *
+     * Uses numeric status IDs (4=Expired, 6=Cancelled, 7=Deceased) for reliable API v4 filtering.
+     * Optionally scopes to configured credentialing membership type IDs.
+     *
+     * @return array|WP_Error
      */
     public function get_expired_memberships( $months = 6 ) {
         $since = date( 'Y-m-d', strtotime( "-{$months} months" ) );
         $today = date( 'Y-m-d' );
+
+        $where = [
+            [ 'end_date', '>=', $since ],
+            [ 'end_date', '<=', $today ],
+            // Use numeric IDs: 4=Expired, 6=Cancelled, 7=Deceased
+            [ 'status_id', 'IN', [ 4, 6, 7 ] ],
+        ];
+
+        // Scope to configured credentialing type IDs if any are set
+        $type_ids = array_filter( array_map( 'intval', [
+            AOS_MS_Settings::get( 'achievement_type_id' ),
+            AOS_MS_Settings::get( 'fellowship_type_id' ),
+            AOS_MS_Settings::get( 'diplomate_type_id' ),
+        ] ) );
+        if ( ! empty( $type_ids ) ) {
+            $where[] = [ 'membership_type_id', 'IN', array_values( $type_ids ) ];
+        }
 
         $memberships = $this->request( 'Membership', 'get', [
             'select' => [
@@ -118,16 +140,12 @@ class AOS_MS_CiviCRM {
                 'contact_id.display_name',
                 'contact_id.email_primary.email',
             ],
-            'where' => [
-                [ 'end_date', '>=', $since ],
-                [ 'end_date', '<=', $today ],
-                [ 'status_id:name', 'IN', [ 'Expired', 'Cancelled', 'Deceased' ] ],
-            ],
+            'where' => $where,
             'limit' => 1000,
         ] );
 
         if ( is_wp_error( $memberships ) ) {
-            return [];
+            return $memberships; // Surface the error instead of silently returning []
         }
 
         $result = [];

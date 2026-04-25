@@ -265,6 +265,10 @@ class AOS_MS_Admin {
         }
 
         $memberships = $civi->get_expired_memberships( $months );
+        if ( is_wp_error( $memberships ) ) {
+            wp_send_json_error( 'CiviCRM query failed: ' . $memberships->get_error_message() );
+            return;
+        }
         if ( empty( $memberships ) ) {
             wp_send_json_success( [ 'rows' => [], 'message' => 'No expired memberships found in the last ' . $months . ' months.' ] );
             return;
