@@ -1,0 +1,1 @@
+# aos-member-directory-sync
