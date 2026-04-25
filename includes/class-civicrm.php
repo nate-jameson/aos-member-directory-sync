@@ -117,14 +117,9 @@ class AOS_MS_CiviCRM {
             'options'   => [ 'limit' => 1000 ],
         ];
 
-        // Scope to configured credentialing type IDs if set
-        // Collect all configured credentialing type IDs (matches settings keys in class-settings.php)
-        $type_ids = array_filter( array_map( 'intval', array_merge(
-            array_map( 'trim', explode( ',', AOS_MS_Settings::get( 'type_active', '' ) ) ),
-            array_map( 'trim', explode( ',', AOS_MS_Settings::get( 'type_achievement', '' ) ) ),
-            array_map( 'trim', explode( ',', AOS_MS_Settings::get( 'type_fellowship', '' ) ) ),
-            array_map( 'trim', explode( ',', AOS_MS_Settings::get( 'type_diplomate', '' ) ) )
-        ) ) );
+        // Scope to the active membership type IDs configured in settings.
+        // type_achievement/fellowship/diplomate are used only for UI badge-mapping, not for queries.
+        $type_ids = array_filter( array_map( 'intval', array_map( 'trim', explode( ',', AOS_MS_Settings::get( 'type_active', '' ) ) ) ) );
         if ( ! empty( $type_ids ) ) {
             $params['membership_type_id'] = [ 'IN' => array_values( $type_ids ) ];
         }

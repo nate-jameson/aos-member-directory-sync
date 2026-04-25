@@ -345,20 +345,11 @@ class AOS_MS_Admin {
         $civi = new AOS_MS_CiviCRM();
         if ( ! $civi->is_configured() ) wp_send_json_error( 'CiviCRM not configured.' );
 
-        // Get all active membership type IDs from settings
-        $active_raw  = AOS_MS_Settings::get( 'type_active', '' );
-        $achieve_raw = AOS_MS_Settings::get( 'type_achievement', '' );
-        $fellow_raw  = AOS_MS_Settings::get( 'type_fellowship', '' );
-        $diplo_raw   = AOS_MS_Settings::get( 'type_diplomate', '' );
-
-        $all_ids = [];
-        foreach ( [ $active_raw, $achieve_raw, $fellow_raw, $diplo_raw ] as $raw ) {
-            foreach ( explode( ',', $raw ) as $id ) {
-                $id = trim( $id );
-                if ( is_numeric( $id ) ) $all_ids[] = (int) $id;
-            }
-        }
-        $all_ids = array_unique( $all_ids );
+        // type_active holds the membership type IDs to query.
+        // type_achievement/fellowship/diplomate are for badge-mapping only.
+        $active_raw = AOS_MS_Settings::get( 'type_active', '' );
+        $all_ids    = array_filter( array_map( 'intval', array_map( 'trim', explode( ',', $active_raw ) ) ) );
+        $all_ids    = array_unique( $all_ids );
 
         $memberships = $civi->get_active_memberships( $all_ids );
         if ( is_wp_error( $memberships ) ) {
