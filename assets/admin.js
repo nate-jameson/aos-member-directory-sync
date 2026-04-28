@@ -298,12 +298,18 @@ jQuery(function($) {
                 $btn.replaceWith('<a href="' + res.data.edit_url + '" target="_blank" class="button button-small">Edit ↗</a> ' + badge);
 
                 // Build status message
+                var imgUrl  = res.data.image_url || '';
                 var statusMsg = '✓ Draft created';
                 if (webUrl) {
                     var srcLabel = webSrc === 'search' ? 'web search' : 'CiviCRM';
-                    statusMsg += ' — website found via ' + srcLabel + ': <a href="' + escAttr(webUrl) + '" target="_blank">' + escHtml(webUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')) + '</a>';
+                    statusMsg += ' — website via ' + srcLabel + ': <a href="' + escAttr(webUrl) + '" target="_blank">' + escHtml(webUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')) + '</a>';
                 } else {
                     statusMsg += ' — no website found (bio is generic)';
+                }
+                if (imgUrl) {
+                    statusMsg += ' · <a href="' + escAttr(imgUrl) + '" target="_blank">📷 image found</a>';
+                } else {
+                    statusMsg += ' · no image found';
                 }
                 setStatus($status, statusMsg, 'success');
 

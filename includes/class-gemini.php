@@ -90,7 +90,166 @@ class AOS_MS_Gemini {
     }
 
     // -------------------------------------------------------------------------
-    // Step 2 — scrape a URL and return plain text
+    // Step 2 — image discovery helpers
+    // -------------------------------------------------------------------------
+
+    /**
+     * Fetch raw HTML from a URL (no tag-stripping).
+     */
+    private function fetch_html( $url ) {
+        $response = wp_remote_get( $url, [
+            'timeout'   => 15,
+            'sslverify' => false,
+            'headers'   => [
+                'User-Agent' => 'Mozilla/5.0 (compatible; AOS-Member-Sync/1.0)',
+            ],
+        ] );
+        if ( is_wp_error( $response ) )                               return '';
+        if ( wp_remote_retrieve_response_code( $response ) !== 200 )  return '';
+        return wp_remote_retrieve_body( $response );
+    }
+
+    /**
+     * Extract og:image content from raw HTML.
+     */
+    private function extract_og_image( $html ) {
+        // Both attribute orders
+        if ( preg_match(
+            '/<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']|' .
+            '<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']/i',
+            $html, $m
+        ) ) {
+            return trim( $m[1] ?: $m[2] );
+        }
+        return '';
+    }
+
+    /**
+     * Find candidate About/Team/Doctor/Meet page links in HTML.
+     * Returns up to 5 absolute URLs.
+     */
+    private function find_about_links( $html, $base_url ) {
+        $keywords = [ 'about', 'team', 'doctor', 'meet', 'staff', 'provider', 'bio', 'dr-', 'our-' ];
+        $links    = [];
+
+        if ( preg_match_all( '/href=["\']([^"\'#?][^"\']*)["\']/', $html, $m ) ) {
+            foreach ( $m[1] as $href ) {
+                $href_lower = strtolower( $href );
+                foreach ( $keywords as $kw ) {
+                    if ( strpos( $href_lower, $kw ) !== false ) {
+                        $links[] = $this->resolve_url( $href, $base_url );
+                        break;
+                    }
+                }
+            }
+        }
+
+        return array_unique( array_slice( $links, 0, 5 ) );
+    }
+
+    /**
+     * Resolve a potentially-relative URL against a base URL.
+     */
+    private function resolve_url( $url, $base_url ) {
+        if ( preg_match( '/^https?:\/\//i', $url ) ) return $url;
+        if ( substr( $url, 0, 2 ) === '//' )          return 'https:' . $url;
+
+        $parsed = parse_url( $base_url );
+        $scheme = $parsed['scheme'] ?? 'https';
+        $host   = $parsed['host']   ?? '';
+
+        if ( substr( $url, 0, 1 ) === '/' ) {
+            return $scheme . '://' . $host . $url;
+        }
+
+        $path = isset( $parsed['path'] ) ? dirname( $parsed['path'] ) : '';
+        return $scheme . '://' . $host . rtrim( $path, '/' ) . '/' . ltrim( $url, '/' );
+    }
+
+    /**
+     * Find the <img> src closest in DOM position to mentions of $doctor_name.
+     * Skips obvious logos, icons, SVGs, and GIFs.
+     *
+     * @return string Absolute URL or ''
+     */
+    private function find_image_near_name( $html, $doctor_name, $base_url ) {
+        if ( ! preg_match_all( '/<img[^>]+src=["\']([^"\']+)["\'][^>]*>/i', $html, $img_m, PREG_OFFSET_CAPTURE ) ) {
+            return '';
+        }
+
+        // Positions where the doctor's name appears
+        $name_parts  = array_filter( explode( ' ', $doctor_name ), fn( $p ) => strlen( $p ) > 2 );
+        $name_positions = [];
+        foreach ( $name_parts as $part ) {
+            $pos = stripos( $html, $part );
+            if ( $pos !== false ) $name_positions[] = $pos;
+        }
+
+        $best_src  = '';
+        $best_dist = PHP_INT_MAX;
+
+        foreach ( $img_m[1] as [ $src, $img_pos ] ) {
+            // Skip decorative / non-photo images
+            if ( preg_match( '/logo|icon|arrow|button|banner|sprite|pixel|bg-/i', $src ) ) continue;
+            if ( preg_match( '/\.(svg|gif)(\?|$)/i', $src ) ) continue;
+
+            if ( empty( $name_positions ) ) {
+                // No name match — just return first qualifying image
+                return $this->resolve_url( $src, $base_url );
+            }
+
+            foreach ( $name_positions as $name_pos ) {
+                $dist = abs( $img_pos - $name_pos );
+                if ( $dist < $best_dist ) {
+                    $best_dist = $dist;
+                    $best_src  = $src;
+                }
+            }
+        }
+
+        return $best_src ? $this->resolve_url( $best_src, $base_url ) : '';
+    }
+
+    /**
+     * Find the best doctor/practice photo for a listing.
+     *
+     * Priority order:
+     *  1. og:image on an About/Team/Doctor/Meet sub-page
+     *  2. Nearest <img> to doctor name on that sub-page
+     *  3. og:image on the homepage
+     *  4. Nearest <img> to doctor name on the homepage
+     *
+     * @param  string $base_url     Homepage or practice website URL
+     * @param  string $doctor_name  Doctor name for proximity scoring
+     * @return string Absolute image URL, or '' if nothing usable found
+     */
+    public function find_best_image( $base_url, $doctor_name = '' ) {
+        $homepage_html = $this->fetch_html( $base_url );
+        if ( ! $homepage_html ) return '';
+
+        $about_links = $this->find_about_links( $homepage_html, $base_url );
+
+        // Check About/Team/Doctor sub-pages first
+        foreach ( array_slice( $about_links, 0, 3 ) as $about_url ) {
+            $about_html = $this->fetch_html( $about_url );
+            if ( ! $about_html ) continue;
+
+            $og = $this->extract_og_image( $about_html );
+            if ( $og ) return $og;
+
+            $near = $this->find_image_near_name( $about_html, $doctor_name, $about_url );
+            if ( $near ) return $near;
+        }
+
+        // Fallback to homepage
+        $og = $this->extract_og_image( $homepage_html );
+        if ( $og ) return $og;
+
+        return $this->find_image_near_name( $homepage_html, $doctor_name, $base_url );
+    }
+
+    // -------------------------------------------------------------------------
+    // Step 3 — scrape a URL and return plain text
     // -------------------------------------------------------------------------
 
     /**
@@ -223,6 +382,13 @@ PROMPT;
 
         $parsed['website_url']    = $website;
         $parsed['website_source'] = $website_source;
+
+        // --- Find best image -----------------------------------------------
+        $image_url = '';
+        if ( ! empty( $website ) ) {
+            $image_url = $this->find_best_image( $website, $name );
+        }
+        $parsed['image_url'] = $image_url;
 
         return $parsed;
     }

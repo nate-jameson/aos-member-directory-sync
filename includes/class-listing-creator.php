@@ -77,6 +77,19 @@ class AOS_MS_Listing_Creator {
         update_post_meta( $post_id, '_aos_civicrm_contact_id', intval( $contact['id'] ?? 0 ) );
         update_post_meta( $post_id, '_aos_ai_confidence', $ai_data['confidence'] ?? 'none' );
 
+        // Featured image — download and attach if AI found one
+        $image_url = $ai_data['image_url'] ?? '';
+        if ( $image_url ) {
+            require_once ABSPATH . 'wp-admin/includes/media.php';
+            require_once ABSPATH . 'wp-admin/includes/file.php';
+            require_once ABSPATH . 'wp-admin/includes/image.php';
+
+            $attachment_id = media_sideload_image( $image_url, $post_id, $title, 'id' );
+            if ( ! is_wp_error( $attachment_id ) ) {
+                set_post_thumbnail( $post_id, $attachment_id );
+            }
+        }
+
         // Geocode address if possible
         self::geocode_and_save( $post_id, $contact );
 
