@@ -213,8 +213,18 @@ jQuery(function($) {
             var loc = [r.city, r.state_province].filter(Boolean).join(', ') || '—';
             var web = r.website ? '<a href="' + escAttr(r.website) + '" target="_blank">↗</a>' : '—';
 
-            var provBtn = '<button class="button button-small aos-ms-btn-create" data-idx="' + i + '" data-dir="' + provDir + '" data-col="provider">+ Create</button>';
-            var pracBtn = '<button class="button button-small aos-ms-btn-create" data-idx="' + i + '" data-dir="' + pracDir + '" data-col="practice">+ Create</button>';
+            function dirActionCell(dirType, dirId) {
+                var postId  = r[dirType + '_post_id'];
+                var editUrl = r[dirType + '_edit_url'];
+                var status  = r[dirType + '_status'];
+                if (postId) {
+                    return '<a href="' + escAttr(editUrl) + '" target="_blank" class="button button-small">Edit ↗</a> ' + statusLabel(status);
+                }
+                return '<button class="button button-small aos-ms-btn-create" data-idx="' + i + '" data-dir="' + dirId + '" data-col="' + dirType + '">+ Create</button>';
+            }
+
+            var provBtn = dirActionCell('provider', provDir);
+            var pracBtn = dirActionCell('practice', pracDir);
 
             var memType   = r.membership_type_name || r.membership_type_id || '—';
             var startDate = r.start_date ? r.start_date.replace(' 00:00:00', '') : '—';
@@ -239,7 +249,7 @@ jQuery(function($) {
             );
         });
 
-        $('#aos-ms-new-count').text(rows.length + ' active members without a listing');
+        $('#aos-ms-new-count').text(rows.length + ' member(s) with incomplete listings');
         $('#aos-ms-create-all-drafts').show();
         $('#aos-ms-new-results').show();
     }

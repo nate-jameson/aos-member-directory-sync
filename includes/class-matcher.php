@@ -30,9 +30,8 @@ class AOS_MS_Matcher {
                 // Directorist stores directory ID in 'directory_type' meta (native).
                 // Our plugin also writes '_atbdp_listing_type' as a fallback.
                 $dir_id = (int) get_post_meta( $pid, '_directory_type', true );
-                if ( ! $dir_id ) {
-                    $dir_id = (int) get_post_meta( $pid, 'directory_type', true );
-                }
+                if ( ! $dir_id ) $dir_id = (int) get_post_meta( $pid, 'directory_type', true );
+                if ( ! $dir_id ) $dir_id = (int) get_post_meta( $pid, '_atbdp_listing_type', true );
                 $results[ $pid ] = [ 'post_id' => $pid, 'directory_id' => $dir_id, 'confidence' => 'high', 'method' => 'email' ];
             }
         }
@@ -51,9 +50,8 @@ class AOS_MS_Matcher {
                     // Directorist stores directory ID in 'directory_type' meta (native).
                 // Our plugin also writes '_atbdp_listing_type' as a fallback.
                 $dir_id = (int) get_post_meta( $pid, '_directory_type', true );
-                if ( ! $dir_id ) {
-                    $dir_id = (int) get_post_meta( $pid, 'directory_type', true );
-                }
+                if ( ! $dir_id ) $dir_id = (int) get_post_meta( $pid, 'directory_type', true );
+                if ( ! $dir_id ) $dir_id = (int) get_post_meta( $pid, '_atbdp_listing_type', true );
                     $results[ $pid ] = [ 'post_id' => $pid, 'directory_id' => $dir_id, 'confidence' => 'medium', 'method' => 'name' ];
                 }
             }

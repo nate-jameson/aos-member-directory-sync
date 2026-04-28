@@ -25,10 +25,29 @@ class AOS_MS_Gemini {
         $state   = $contact['state_province'] ?? '';
         $website = $website_url ?: $contact['website'] ?? '';
 
+        // Scrape website content so Gemini has real data to work with.
         $website_context = '';
         if ( ! empty( $website ) ) {
-            $website_context = "Their practice website is: {$website}\n";
-            $website_context .= "Please research this website to find information about the doctor and practice.\n";
+            $site_response = wp_remote_get( $website, [
+                'timeout'   => 20,
+                'headers'   => [ 'User-Agent' => 'Mozilla/5.0 (compatible; AOS-Member-Sync/1.0)' ],
+                'sslverify' => false,
+            ] );
+            if ( ! is_wp_error( $site_response ) && wp_remote_retrieve_response_code( $site_response ) === 200 ) {
+                $html = wp_remote_retrieve_body( $site_response );
+                // Strip scripts, styles, nav, header, footer before extracting text
+                $html = preg_replace( '/<(script|style|nav|header|footer)[^>]*>.*?<\/\1>/is', '', $html );
+                $text = wp_strip_all_tags( $html );
+                $text = preg_replace( '/\s+/', ' ', trim( $text ) );
+                $text = substr( $text, 0, 6000 );
+                if ( $text ) {
+                    $website_context = "Content scraped from their practice website ({$website}):\n\n{$text}\n\n";
+                }
+            }
+            if ( empty( $website_context ) ) {
+                // Fallback: mention URL even if scrape failed
+                $website_context = "Their practice website is: {$website} (unable to scrape — write a general bio).\n";
+            }
         }
 
         $prompt = <<<PROMPT
@@ -37,10 +56,9 @@ You are helping populate a professional directory listing for an orthodontist.
 Doctor: {$name}
 Location: {$city}, {$state}
 {$website_context}
-
-Based on the information available, write a professional biography paragraph (3–5 sentences) suitable for a member directory listing. 
-Focus on their professional background, specialties, and what makes their practice distinctive.
-If you cannot find specific information, write a general professional bio that could be verified and personalised later.
+Based on the information above, write a professional biography paragraph (3–5 sentences) suitable for a member directory listing.
+Use specific details from the website content if provided. Focus on their professional background, specialties, and what makes their practice distinctive.
+If no website content was available, write a general professional bio that can be verified and personalised later.
 
 Also suggest:
 - A short specialty description (1 line, e.g. "Orthodontics & Dentofacial Orthopedics")
@@ -48,7 +66,7 @@ Also suggest:
 Return your response as a JSON object with these keys:
 - "biography": string (the bio paragraph)
 - "specialty": string (the specialty line)
-- "confidence": "high" if you found website content, "low" if generic
+- "confidence": "high" if website content was provided, "low" if generic
 
 Only return valid JSON, no markdown fences.
 PROMPT;

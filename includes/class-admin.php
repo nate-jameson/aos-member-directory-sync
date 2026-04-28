@@ -415,34 +415,79 @@ class AOS_MS_Admin {
             return;
         }
 
-        // Filter to only those WITHOUT a listing
+        // Show members who are missing at least one directory listing (provider OR practice).
+        // Only exclude contacts that have BOTH directories with published (active) listings.
+        $provider_dir_id = (int) AOS_MS_Settings::get( 'provider_directory_id', 34 );
+        $practice_dir_id = (int) AOS_MS_Settings::get( 'practice_directory_id', 115 );
+
+        $make_listing_info = function( $match ) {
+            if ( ! $match ) return [ 'post_id' => 0, 'label' => '', 'edit_url' => '', 'status' => '' ];
+            $post = get_post( $match['post_id'] );
+            return [
+                'post_id'  => $match['post_id'],
+                'label'    => $post ? $post->post_title : 'Post #' . $match['post_id'],
+                'edit_url' => admin_url( 'post.php?post=' . $match['post_id'] . '&action=edit' ),
+                'status'   => get_post_status( $match['post_id'] ) ?: 'unknown',
+            ];
+        };
+
         $rows = [];
         $seen_contacts = [];
         foreach ( $memberships as $m ) {
             $cid = $m['contact_id'];
             if ( in_array( $cid, $seen_contacts ) ) continue; // dedupe contacts
-            $match = AOS_MS_Matcher::find_listing( $m );
-            if ( $match ) continue; // already has a listing
+
+            $all_matches = AOS_MS_Matcher::find_all_listings( $m );
+
+            $provider_match = null;
+            $practice_match = null;
+            foreach ( $all_matches as $match ) {
+                if ( $match['directory_id'] === $provider_dir_id && ! $provider_match ) {
+                    $provider_match = $match;
+                } elseif ( $match['directory_id'] === $practice_dir_id && ! $practice_match ) {
+                    $practice_match = $match;
+                }
+            }
+
+            $prov_info = $make_listing_info( $provider_match );
+            $prac_info = $make_listing_info( $practice_match );
+
+            $prov_active = ( $prov_info['post_id'] && $prov_info['status'] === 'publish' );
+            $prac_active = ( $prac_info['post_id'] && $prac_info['status'] === 'publish' );
+
+            // Skip only if BOTH directories have active (published) listings
+            if ( $prov_active && $prac_active ) continue;
 
             $seen_contacts[] = $cid;
             $rows[] = [
-                'contact_id'         => $cid,
-                'display_name'       => $m['display_name'] ?? '',
-                'email'              => $m['email'] ?? '',
-                'membership_type_id' => $m['membership_type_id'] ?? '',
+                'contact_id'           => $cid,
+                'display_name'         => $m['display_name'] ?? '',
+                'email'                => $m['email'] ?? '',
+                'membership_type_id'   => $m['membership_type_id'] ?? '',
                 'membership_type_name' => $m['membership_type_name'] ?? '',
-                'start_date'         => $m['start_date'] ?? '',
-                'end_date'           => $m['end_date'] ?? '',
-                'status'             => $m['status'] ?? '',
-                'credentialing'      => '', // populated below via second query
-                'city'               => $m['city'] ?? '',
-                'state_province'     => $m['state'] ?? $m['state_province'] ?? '',
-                'website'            => $m['website'] ?? '',
-                'phone'              => $m['phone'] ?? '',
-                'street_address'     => $m['street_address'] ?? '',
-                'postal_code'        => $m['postal_code'] ?? '',
-                'first_name'         => $m['first_name'] ?? '',
-                'last_name'          => $m['last_name'] ?? '',
+                'start_date'           => $m['start_date'] ?? '',
+                'end_date'             => $m['end_date'] ?? '',
+                'status'               => $m['status'] ?? '',
+                'credentialing'        => '', // populated below via second query
+                'city'                 => $m['city'] ?? '',
+                'state_province'       => $m['state'] ?? $m['state_province'] ?? '',
+                'website'              => $m['website'] ?? '',
+                'phone'                => $m['phone'] ?? '',
+                'street_address'       => $m['street_address'] ?? '',
+                'postal_code'          => $m['postal_code'] ?? '',
+                'first_name'           => $m['first_name'] ?? '',
+                'last_name'            => $m['last_name'] ?? '',
+                // Per-directory listing data
+                'provider_post_id'     => $prov_info['post_id'],
+                'provider_label'       => $prov_info['label'],
+                'provider_edit_url'    => $prov_info['edit_url'],
+                'provider_status'      => $prov_info['status'],
+                'practice_post_id'     => $prac_info['post_id'],
+                'practice_label'       => $prac_info['label'],
+                'practice_edit_url'    => $prac_info['edit_url'],
+                'practice_status'      => $prac_info['status'],
+                'needs_provider'       => ! $prov_active,
+                'needs_practice'       => ! $prac_active,
             ];
         }
 
@@ -550,7 +595,15 @@ class AOS_MS_Admin {
                 'city'           => sanitize_text_field( $c['city'] ?? '' ),
                 'state_province' => sanitize_text_field( $c['state_province'] ?? '' ),
             ];
-            $type_id = intval( $c['membership_type_id'] ?? 0 );
+            $credentialing = sanitize_text_field( $c['credentialing'] ?? '' );
+
+            // Determine which directories still need creation for this member
+            $needs_provider = isset( $c['needs_provider'] ) ? (bool) $c['needs_provider'] : true;
+            $needs_practice = isset( $c['needs_practice'] ) ? (bool) $c['needs_practice'] : true;
+            $dirs_to_create = [];
+            if ( $needs_provider ) $dirs_to_create[] = $provider_dir;
+            if ( $needs_practice ) $dirs_to_create[] = $practice_dir;
+            if ( empty( $dirs_to_create ) ) continue;
 
             // Enrich once, reuse for both listings
             $ai_data = [];
@@ -558,8 +611,8 @@ class AOS_MS_Admin {
                 $ai_data = $gemini->enrich_listing( $contact, $contact['website'] );
             }
 
-            foreach ( $directories as $dir_id ) {
-                $post_id = AOS_MS_Listing_Creator::create_draft( $contact, $type_id, $ai_data, $dir_id );
+            foreach ( $dirs_to_create as $dir_id ) {
+                $post_id = AOS_MS_Listing_Creator::create_draft( $contact, $credentialing, $ai_data, $dir_id );
                 if ( is_wp_error( $post_id ) ) {
                     $errors[] = ( $contact['display_name'] ?: 'Contact ' . $contact['id'] ) . ' (dir ' . $dir_id . '): ' . $post_id->get_error_message();
                 } else {
