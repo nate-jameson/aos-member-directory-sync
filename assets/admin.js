@@ -242,7 +242,7 @@ jQuery(function($) {
                 '<td>' + escHtml(memStatus) + '</td>' +
                 '<td>' + (r.credentialing ? '<strong>' + escHtml(r.credentialing) + '</strong>' : '—') + '</td>' +
                 '<td>' + escHtml(loc) + '</td>' +
-                '<td>' + web + '</td>' +
+                '<td class="aos-ms-col-web">' + web + '</td>' +
                 '<td class="aos-ms-col-provider-' + i + '">' + provBtn + '</td>' +
                 '<td class="aos-ms-col-practice-' + i + '">' + pracBtn + '</td>' +
                 '</tr>'
@@ -260,28 +260,68 @@ jQuery(function($) {
 
     // Single draft create (provider OR practice button)
     $(document).on('click', '.aos-ms-btn-create', function() {
-        var $btn    = $(this).prop('disabled', true).text('Creating…');
+        var $btn    = $(this).prop('disabled', true).text('Searching web…');
         var idx     = parseInt($(this).data('idx'));
         var dirId   = parseInt($(this).data('dir'));
         var col     = $(this).data('col'); // 'provider' or 'practice'
         var c       = newMembersData[idx];
         var $status = $('#aos-ms-new-status');
 
+        // Show progressive status so user knows the enrichment is running
+        setStatus($status, '🔍 Searching for ' + escHtml(c.display_name) + ''s practice website…', 'loading');
+
+        // After a short moment update label to show scraping is happening
+        var enrichTimer = setTimeout(function() {
+            if ($btn.is(':disabled')) $btn.text('Enriching…');
+            setStatus($status, '✨ Scraping website &amp; generating bio with AI…', 'loading');
+        }, 3000);
+
         var params = $.extend({ action: 'aos_ms_create_draft', nonce: nonce, directory_id: dirId }, c);
         $.post(ajaxurl, params, function(res) {
+            clearTimeout(enrichTimer);
             if (res.success) {
-                var badge = '<span class="aos-ms-ai-badge' + (res.data.ai_conf === 'low' ? ' low' : '') + '">AI ' + (res.data.ai_conf === 'high' ? '✓' : '~') + '</span>';
+                var conf    = res.data.ai_conf || 'none';
+                var confLbl = conf === 'high' ? '✓ high' : conf === 'low' ? '~ low' : '—';
+                var badge   = '<span class="aos-ms-ai-badge' + (conf === 'low' ? ' low' : '') + '" title="AI confidence: ' + conf + '">AI ' + confLbl + '</span>';
+
+                // Show discovered website in the row's website cell if it was empty
+                var webSrc = res.data.website_source || 'none';
+                var webUrl = res.data.website_url    || '';
+                if (webUrl && webSrc !== 'civicrm') {
+                    var $row    = $('#aos-ms-new-row-' + idx);
+                    var $webCell = $row.find('td.aos-ms-col-web');
+                    if ($webCell.text().trim() === '—') {
+                        $webCell.html('<a href="' + escAttr(webUrl) + '" target="_blank" title="Found via web search">↗ found</a>');
+                    }
+                }
+
                 $btn.replaceWith('<a href="' + res.data.edit_url + '" target="_blank" class="button button-small">Edit ↗</a> ' + badge);
-                // Highlight row only when both columns are done
-                var $row = $('#aos-ms-new-row-' + idx);
-                if ($row.find('.aos-ms-btn-create').length === 0) {
-                    $row.css('background', '#f0f7ee');
+
+                // Build status message
+                var statusMsg = '✓ Draft created';
+                if (webUrl) {
+                    var srcLabel = webSrc === 'search' ? 'web search' : 'CiviCRM';
+                    statusMsg += ' — website found via ' + srcLabel + ': <a href="' + escAttr(webUrl) + '" target="_blank">' + escHtml(webUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')) + '</a>';
+                } else {
+                    statusMsg += ' — no website found (bio is generic)';
+                }
+                setStatus($status, statusMsg, 'success');
+
+                // Highlight row when both columns done
+                var $row2 = $('#aos-ms-new-row-' + idx);
+                if ($row2.find('.aos-ms-btn-create').length === 0) {
+                    $row2.css('background', '#f0f7ee');
                 }
             } else {
+                clearTimeout(enrichTimer);
                 $btn.prop('disabled', false).text('+ Create');
                 setStatus($status, '✗ ' + res.data, 'error');
             }
-        }).fail(function() { $btn.prop('disabled', false).text('+ Create'); });
+        }).fail(function() {
+            clearTimeout(enrichTimer);
+            $btn.prop('disabled', false).text('+ Create');
+            setStatus($status, '✗ Request failed', 'error');
+        });
     });
 
     // Create all / selected drafts

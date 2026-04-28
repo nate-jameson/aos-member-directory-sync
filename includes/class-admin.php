@@ -560,11 +560,13 @@ class AOS_MS_Admin {
         }
 
         wp_send_json_success( [
-            'post_id'      => $post_id,
-            'directory_id' => $directory_id,
-            'edit_url'     => admin_url( 'post.php?post=' . $post_id . '&action=edit' ),
-            'ai_conf'      => $ai_data['confidence'] ?? 'none',
-            'message'      => 'Draft created.',
+            'post_id'        => $post_id,
+            'directory_id'   => $directory_id,
+            'edit_url'       => admin_url( 'post.php?post=' . $post_id . '&action=edit' ),
+            'ai_conf'        => $ai_data['confidence'] ?? 'none',
+            'website_url'    => $ai_data['website_url'] ?? '',
+            'website_source' => $ai_data['website_source'] ?? 'none',
+            'message'        => 'Draft created.',
         ] );
     }
 
