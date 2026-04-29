@@ -6,9 +6,11 @@ class AOS_MS_Gemini {
     const API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
 
     private $api_key;
+    private $places_api_key;
 
     public function __construct() {
-        $this->api_key = AOS_MS_Settings::get( 'gemini_api_key' );
+        $this->api_key        = AOS_MS_Settings::get( 'gemini_api_key' );
+        $this->places_api_key = AOS_MS_Settings::get( 'places_api_key' );
     }
 
     public function is_configured() {
@@ -16,8 +18,51 @@ class AOS_MS_Gemini {
     }
 
     // -------------------------------------------------------------------------
-    // Step 1 — find the practice website via DuckDuckGo
+    // Step 1 — find the practice website (Places API → DuckDuckGo fallback)
     // -------------------------------------------------------------------------
+
+    /**
+     * Try Google Places "Find Place from Text" to get the practice website.
+     * Returns the website URL, or '' if not found / API key not configured.
+     *
+     * @param  string $name  Doctor or practice name
+     * @param  string $city
+     * @param  string $state
+     * @return string URL or empty string
+     */
+    private function find_website_via_places( $name, $city = '', $state = '' ) {
+        if ( empty( $this->places_api_key ) ) return '';
+
+        $query = trim( "{$name} orthodontist {$city} {$state}" );
+
+        // Step 1 — Find Place to get place_id
+        $find_url = add_query_arg( [
+            'input'     => urlencode( $query ),
+            'inputtype' => 'textquery',
+            'fields'    => 'place_id,name',
+            'key'       => $this->places_api_key,
+        ], 'https://maps.googleapis.com/maps/api/place/findplacefromtext/json' );
+
+        $find_resp = wp_remote_get( $find_url, [ 'timeout' => 15, 'sslverify' => true ] );
+        if ( is_wp_error( $find_resp ) || wp_remote_retrieve_response_code( $find_resp ) !== 200 ) return '';
+
+        $find_data = json_decode( wp_remote_retrieve_body( $find_resp ), true );
+        $place_id  = $find_data['candidates'][0]['place_id'] ?? '';
+        if ( ! $place_id ) return '';
+
+        // Step 2 — Place Details to get website
+        $details_url = add_query_arg( [
+            'place_id' => $place_id,
+            'fields'   => 'website',
+            'key'      => $this->places_api_key,
+        ], 'https://maps.googleapis.com/maps/api/place/details/json' );
+
+        $details_resp = wp_remote_get( $details_url, [ 'timeout' => 15, 'sslverify' => true ] );
+        if ( is_wp_error( $details_resp ) || wp_remote_retrieve_response_code( $details_resp ) !== 200 ) return '';
+
+        $details_data = json_decode( wp_remote_retrieve_body( $details_resp ), true );
+        return $details_data['result']['website'] ?? '';
+    }
 
     /**
      * Search DuckDuckGo HTML for a practice/provider website.
@@ -28,7 +73,7 @@ class AOS_MS_Gemini {
      * @param  string $state
      * @return string URL or empty string
      */
-    public function find_website( $name, $city = '', $state = '' ) {
+    private function find_website_via_duckduckgo( $name, $city = '', $state = '' ) {
         $query = trim( "{$name} orthodontist {$city} {$state}" );
 
         $response = wp_remote_get(
@@ -75,6 +120,8 @@ class AOS_MS_Gemini {
             'yelp.com', 'healthgrades.com', 'zocdoc.com', 'vitals.com',
             'ratemds.com', 'webmd.com', 'doximity.com', 'sharecare.com',
             'usnews.com', 'castleconnolly.com', 'ada.org', 'aaoinfo.org',
+            'dentalplans.com', 'dental.com', '1-800-dentist.com',
+            'findadentist.ada.org', 'opencare.com', 'birdeye.com',
             'orthodontics.com', 'find.orthodontics.com',
         ];
 
@@ -87,6 +134,25 @@ class AOS_MS_Gemini {
         }
 
         return '';
+    }
+
+    /**
+     * Find a practice website for the given doctor.
+     * Tries Google Places API first (most accurate — returns GMB website).
+     * Falls back to DuckDuckGo search if Places API is not configured or returns nothing.
+     *
+     * @param  string $name
+     * @param  string $city
+     * @param  string $state
+     * @return string URL or empty string
+     */
+    public function find_website( $name, $city = '', $state = '' ) {
+        // 1 — Google Places (GMB website)
+        $url = $this->find_website_via_places( $name, $city, $state );
+        if ( $url ) return $url;
+
+        // 2 — DuckDuckGo fallback
+        return $this->find_website_via_duckduckgo( $name, $city, $state );
     }
 
     // -------------------------------------------------------------------------

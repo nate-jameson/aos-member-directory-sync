@@ -30,7 +30,8 @@ class AOS_MS_Settings {
             'gemini' => [
                 'label'  => 'AI Enrichment',
                 'fields' => [
-                    'gemini_api_key' => [ 'label' => 'Gemini API Key', 'type' => 'password', 'placeholder' => '' ],
+                    'gemini_api_key' => [ 'label' => 'Gemini API Key',          'type' => 'password', 'placeholder' => '' ],
+                    'places_api_key' => [ 'label' => 'Google Places API Key',   'type' => 'password', 'placeholder' => '' ],
                 ],
             ],
             'membership_types' => [
