@@ -35,33 +35,29 @@ class AOS_MS_Gemini {
 
         $query = trim( "{$name} orthodontist {$city} {$state}" );
 
-        // Step 1 — Find Place to get place_id
-        $find_url = add_query_arg( [
-            'input'     => urlencode( $query ),
-            'inputtype' => 'textquery',
-            'fields'    => 'place_id,name',
-            'key'       => $this->places_api_key,
-        ], 'https://maps.googleapis.com/maps/api/place/findplacefromtext/json' );
+        // New Places API (v1) — single Text Search request
+        // Docs: https://developers.google.com/maps/documentation/places/web-service/text-search
+        $response = wp_remote_post(
+            'https://places.googleapis.com/v1/places:searchText',
+            [
+                'timeout'   => 15,
+                'sslverify' => true,
+                'headers'   => [
+                    'Content-Type'     => 'application/json',
+                    'X-Goog-Api-Key'   => $this->places_api_key,
+                    'X-Goog-FieldMask' => 'places.websiteUri,places.displayName',
+                ],
+                'body' => wp_json_encode( [
+                    'textQuery'  => $query,
+                    'maxResults' => 1,
+                ] ),
+            ]
+        );
 
-        $find_resp = wp_remote_get( $find_url, [ 'timeout' => 15, 'sslverify' => true ] );
-        if ( is_wp_error( $find_resp ) || wp_remote_retrieve_response_code( $find_resp ) !== 200 ) return '';
+        if ( is_wp_error( $response ) || wp_remote_retrieve_response_code( $response ) !== 200 ) return '';
 
-        $find_data = json_decode( wp_remote_retrieve_body( $find_resp ), true );
-        $place_id  = $find_data['candidates'][0]['place_id'] ?? '';
-        if ( ! $place_id ) return '';
-
-        // Step 2 — Place Details to get website
-        $details_url = add_query_arg( [
-            'place_id' => $place_id,
-            'fields'   => 'website',
-            'key'      => $this->places_api_key,
-        ], 'https://maps.googleapis.com/maps/api/place/details/json' );
-
-        $details_resp = wp_remote_get( $details_url, [ 'timeout' => 15, 'sslverify' => true ] );
-        if ( is_wp_error( $details_resp ) || wp_remote_retrieve_response_code( $details_resp ) !== 200 ) return '';
-
-        $details_data = json_decode( wp_remote_retrieve_body( $details_resp ), true );
-        return $details_data['result']['website'] ?? '';
+        $data = json_decode( wp_remote_retrieve_body( $response ), true );
+        return $data['places'][0]['websiteUri'] ?? '';
     }
 
     /**
