@@ -33,7 +33,7 @@ class AOS_MS_Gemini {
     private function find_website_via_places( $name, $city = '', $state = '' ) {
         if ( empty( $this->places_api_key ) ) return '';
 
-        $query = trim( "{$name} orthodontist {$city} {$state}" );
+        $query = trim( "{$name} dentist {$city} {$state}" );
 
         // New Places API (v1) — single Text Search request
         // Docs: https://developers.google.com/maps/documentation/places/web-service/text-search
@@ -70,7 +70,7 @@ class AOS_MS_Gemini {
      * @return string URL or empty string
      */
     private function find_website_via_duckduckgo( $name, $city = '', $state = '' ) {
-        $query = trim( "{$name} orthodontist {$city} {$state}" );
+        $query = trim( "{$name} dentist {$city} {$state}" );
 
         $response = wp_remote_get(
             'https://html.duckduckgo.com/html/?q=' . urlencode( $query ),
@@ -385,12 +385,12 @@ class AOS_MS_Gemini {
 
         // --- Build Gemini prompt ------------------------------------------
         $prompt = <<<PROMPT
-You are helping populate a professional directory listing for an orthodontist.
+You are helping populate a professional directory listing for a dental provider who is a member of the American Orthodontic Society (AOS). AOS members are dentists and pediatric dentists who provide orthodontic services — they are NOT necessarily orthodontists by specialty.
 
 Doctor: {$name}
 Location: {$city}, {$state}
 {$website_context}
-Based on the information above, write a professional biography paragraph (3–5 sentences) suitable for a member directory listing. Use specific details from the website content if provided. Focus on their professional background, specialties, and what makes their practice distinctive. If no website content was available, write a general professional bio suitable for an orthodontist.
+Based on the information above, write a professional biography paragraph (3–5 sentences) suitable for a member directory listing. Use specific details from the website content if provided. Focus on their professional background, the services they offer, and what makes their practice distinctive. If no website content was available, write a general professional bio for a dental provider offering orthodontic services.
 
 Also suggest:
 - A short specialty description (1 line, e.g. "Orthodontics & Dentofacial Orthopedics")

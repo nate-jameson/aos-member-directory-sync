@@ -3,12 +3,16 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 /**
  * Adds an "Enrich From AI" meta box to the Directorist listing edit screen.
+ * Two-step flow:
+ *   Step 1 — Find Website: locates a candidate URL, lets admin confirm/edit it.
+ *   Step 2 — Enrich: scrapes the confirmed URL, runs Gemini, saves fields.
  */
 class AOS_MS_Enrich_Metabox {
 
     public static function init() {
-        add_action( 'add_meta_boxes', [ __CLASS__, 'register_metabox' ] );
+        add_action( 'add_meta_boxes',        [ __CLASS__, 'register_metabox' ] );
         add_action( 'admin_enqueue_scripts', [ __CLASS__, 'enqueue_scripts' ] );
+        add_action( 'wp_ajax_aos_ms_find_website',   [ __CLASS__, 'ajax_find_website' ] );
         add_action( 'wp_ajax_aos_ms_enrich_listing', [ __CLASS__, 'ajax_enrich' ] );
     }
 
@@ -30,13 +34,30 @@ class AOS_MS_Enrich_Metabox {
             return;
         }
         wp_nonce_field( 'aos_ms_enrich_listing', 'aos_ms_enrich_nonce' );
+        $existing_website = get_post_meta( $post->ID, '_website', true );
         ?>
         <div id="aos-enrich-wrap" style="font-size:13px;">
             <p style="margin:0 0 8px;color:#555;">Auto-fill biography, specialty, contact info, and headshot using AI.</p>
-            <button type="button" id="aos-enrich-btn" class="button button-primary" style="width:100%;">
-                ✨ Enrich From AI
-            </button>
-            <div id="aos-enrich-status" style="margin-top:8px;font-style:italic;color:#666;min-height:18px;"></div>
+
+            <!-- Step 1: Find Website -->
+            <div id="aos-step-find">
+                <button type="button" id="aos-find-btn" class="button button-secondary" style="width:100%;">
+                    🔍 Step 1: Find Website
+                </button>
+            </div>
+
+            <!-- Step 2: Confirm URL then Enrich (hidden until Step 1 completes) -->
+            <div id="aos-step-enrich" style="display:none;margin-top:10px;">
+                <label style="display:block;margin-bottom:4px;font-weight:600;">Practice Website URL:</label>
+                <input type="url" id="aos-website-url" value="<?php echo esc_attr( $existing_website ); ?>"
+                       style="width:100%;box-sizing:border-box;margin-bottom:6px;" placeholder="https://example.com" />
+                <p id="aos-url-source" style="margin:0 0 8px;font-size:11px;color:#888;font-style:italic;"></p>
+                <button type="button" id="aos-enrich-btn" class="button button-primary" style="width:100%;">
+                    ✨ Step 2: Enrich From AI
+                </button>
+            </div>
+
+            <div id="aos-enrich-status" style="margin-top:8px;font-size:12px;color:#555;line-height:1.5;"></div>
         </div>
         <?php
     }
@@ -61,35 +82,72 @@ class AOS_MS_Enrich_Metabox {
         ] );
     }
 
-    public static function ajax_enrich() {
-        check_ajax_referer( 'aos_ms_enrich_listing', 'nonce' );
+    // -------------------------------------------------------------------------
+    // Step 1 AJAX — find candidate website URL
+    // -------------------------------------------------------------------------
 
-        if ( ! current_user_can( 'edit_posts' ) ) {
-            wp_send_json_error( [ 'message' => 'Unauthorized.' ] );
-        }
+    public static function ajax_find_website() {
+        check_ajax_referer( 'aos_ms_enrich_listing', 'nonce' );
+        if ( ! current_user_can( 'edit_posts' ) ) wp_send_json_error( [ 'message' => 'Unauthorized.' ] );
 
         $post_id = (int) ( $_POST['post_id'] ?? 0 );
-        if ( ! $post_id ) {
-            wp_send_json_error( [ 'message' => 'No post ID provided.' ] );
-        }
+        if ( ! $post_id ) wp_send_json_error( [ 'message' => 'No post ID.' ] );
 
         $post = get_post( $post_id );
-        if ( ! $post || $post->post_type !== 'at_biz_dir' ) {
-            wp_send_json_error( [ 'message' => 'Invalid listing.' ] );
+        if ( ! $post || $post->post_type !== 'at_biz_dir' ) wp_send_json_error( [ 'message' => 'Invalid listing.' ] );
+
+        // Already has a website — return it immediately
+        $existing = get_post_meta( $post_id, '_website', true );
+        if ( $existing ) {
+            wp_send_json_success( [
+                'url'    => $existing,
+                'source' => 'existing',
+            ] );
         }
 
-        // Gather existing meta to use as enrichment seed
-        $title  = $post->post_title;
-        $city   = get_post_meta( $post_id, '_city', true )
-                  ?: get_post_meta( $post_id, '_address', true );
-        $state  = get_post_meta( $post_id, '_state', true );
-        $email  = get_post_meta( $post_id, '_email', true );
-        $phone  = get_post_meta( $post_id, '_phone', true );
-
-        // Strip "Dr." prefix to get a cleaner search name
+        $title = $post->post_title;
         $search_name = preg_replace( '/^Dr\.?\s+/i', '', $title );
 
-        // Build a minimal contact array from existing meta
+        [ $city, $state ] = self::extract_city_state( $post_id );
+
+        $gemini = new AOS_MS_Gemini();
+        $url    = $gemini->find_website( $search_name, $city, $state );
+
+        if ( $url ) {
+            wp_send_json_success( [
+                'url'    => $url,
+                'source' => 'search',
+                'city'   => $city,
+                'state'  => $state,
+            ] );
+        }
+
+        wp_send_json_error( [ 'message' => 'No website found. Enter one manually below.' ] );
+    }
+
+    // -------------------------------------------------------------------------
+    // Step 2 AJAX — enrich using a confirmed URL
+    // -------------------------------------------------------------------------
+
+    public static function ajax_enrich() {
+        check_ajax_referer( 'aos_ms_enrich_listing', 'nonce' );
+        if ( ! current_user_can( 'edit_posts' ) ) wp_send_json_error( [ 'message' => 'Unauthorized.' ] );
+
+        $post_id     = (int) ( $_POST['post_id'] ?? 0 );
+        $website_url = esc_url_raw( trim( $_POST['website_url'] ?? '' ) );
+
+        if ( ! $post_id ) wp_send_json_error( [ 'message' => 'No post ID.' ] );
+
+        $post = get_post( $post_id );
+        if ( ! $post || $post->post_type !== 'at_biz_dir' ) wp_send_json_error( [ 'message' => 'Invalid listing.' ] );
+
+        $title       = $post->post_title;
+        $search_name = preg_replace( '/^Dr\.?\s+/i', '', $title );
+        [ $city, $state ] = self::extract_city_state( $post_id );
+
+        $phone = get_post_meta( $post_id, '_phone', true );
+        $email = get_post_meta( $post_id, '_email', true );
+
         $contact = [
             'display_name'   => $search_name,
             'first_name'     => '',
@@ -98,42 +156,48 @@ class AOS_MS_Enrich_Metabox {
             'phone'          => $phone,
             'city'           => $city,
             'state_province' => $state,
-            'website'        => get_post_meta( $post_id, '_website', true ),
+            'website'        => $website_url,
         ];
 
-        // Run enrichment
-        $gemini      = new AOS_MS_Gemini();
-        $website_url = $gemini->find_website( $search_name, $city, $state );
-        $ai_data     = $gemini->enrich_listing( $contact, $website_url );
+        $gemini  = new AOS_MS_Gemini();
+        $ai_data = $gemini->enrich_listing( $contact, $website_url );
 
-        if ( is_wp_error( $ai_data ) ) {
-            wp_send_json_error( [ 'message' => $ai_data->get_error_message() ] );
+        if ( isset( $ai_data['error'] ) ) {
+            wp_send_json_error( [ 'message' => 'Gemini error: ' . $ai_data['error'] ] );
         }
 
-        // Save enriched fields — only overwrite blank fields
         $fields_updated = [];
 
-        $mappings = [
-            '_phone'   => $phone    ?: ( $ai_data['phone']   ?? '' ),
-            '_website' => get_post_meta( $post_id, '_website', true ) ?: ( $ai_data['website_url'] ?? $website_url ),
-            '_tagline' => get_post_meta( $post_id, '_tagline', true ) ?: ( $ai_data['specialty']   ?? '' ),
-        ];
-
-        foreach ( $mappings as $key => $value ) {
-            if ( $value ) {
-                update_post_meta( $post_id, $key, sanitize_text_field( $value ) );
-                $fields_updated[] = ltrim( $key, '_' );
-            }
+        // Website
+        $w = $website_url ?: ( $ai_data['website_url'] ?? '' );
+        if ( $w && ! get_post_meta( $post_id, '_website', true ) ) {
+            update_post_meta( $post_id, '_website', sanitize_text_field( $w ) );
+            $fields_updated[] = 'website';
         }
 
-        // Biography — update post content if blank
+        // Specialty / tagline
+        $specialty = $ai_data['specialty'] ?? '';
+        if ( $specialty && ! get_post_meta( $post_id, '_tagline', true ) ) {
+            update_post_meta( $post_id, '_tagline', sanitize_text_field( $specialty ) );
+            $fields_updated[] = 'specialty';
+        }
+
+        // Phone
+        $ai_phone = $ai_data['phone'] ?? '';
+        if ( $ai_phone && ! $phone ) {
+            update_post_meta( $post_id, '_phone', sanitize_text_field( $ai_phone ) );
+            $fields_updated[] = 'phone';
+        }
+
+        // Biography → post_content
+        // Use strip_tags so empty <p></p> blocks don't block the update
         $bio = $ai_data['biography'] ?? '';
-        if ( $bio && empty( trim( $post->post_content ) ) ) {
+        if ( $bio && empty( trim( wp_strip_all_tags( $post->post_content ) ) ) ) {
             wp_update_post( [ 'ID' => $post_id, 'post_content' => wp_kses_post( $bio ) ] );
             $fields_updated[] = 'biography';
         }
 
-        // Headshot — only if no featured image set
+        // Headshot — only if no featured image already
         $image_url = $ai_data['image_url'] ?? '';
         if ( $image_url && ! has_post_thumbnail( $post_id ) ) {
             require_once ABSPATH . 'wp-admin/includes/media.php';
@@ -148,13 +212,51 @@ class AOS_MS_Enrich_Metabox {
             }
         }
 
-        $website_used = $ai_data['website_url'] ?? $website_url ?? '';
+        $summary = empty( $fields_updated )
+            ? 'No new fields to fill in (all already set or Gemini returned nothing).'
+            : 'Enriched: ' . implode( ', ', $fields_updated ) . '. Reload the page to see changes.';
 
         wp_send_json_success( [
-            'message'       => 'Enriched: ' . implode( ', ', $fields_updated ) . '. Reload the page to see changes.',
-            'fields'        => $fields_updated,
-            'website_found' => $website_used,
-            'confidence'    => $ai_data['confidence'] ?? null,
+            'message'    => $summary,
+            'fields'     => $fields_updated,
+            'confidence' => $ai_data['confidence'] ?? null,
+            'bio_length' => strlen( $bio ),
+            'specialty'  => $specialty,
         ] );
+    }
+
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
+    /**
+     * Extract city and state from listing meta, trying multiple field patterns.
+     * Returns [ $city, $state ].
+     */
+    private static function extract_city_state( $post_id ) {
+        // Direct meta keys
+        $city  = get_post_meta( $post_id, '_city', true )
+               ?: get_post_meta( $post_id, '_city_name', true )
+               ?: get_post_meta( $post_id, '_atbdp_city', true )
+               ?: '';
+
+        $state = get_post_meta( $post_id, '_state', true )
+               ?: get_post_meta( $post_id, '_state_name', true )
+               ?: get_post_meta( $post_id, '_atbdp_state', true )
+               ?: '';
+
+        // If still empty, try to parse from _address: "Street, City, State ZIP"
+        if ( ( ! $city || ! $state ) ) {
+            $address = get_post_meta( $post_id, '_address', true );
+            if ( $address ) {
+                // Try to parse "..., City, ST 12345" or "..., City, State"
+                if ( preg_match( '/,\s*([^,]+),\s*([A-Za-z ]{2,20})\s*\d{0,5}\s*$/', $address, $m ) ) {
+                    if ( ! $city )  $city  = trim( $m[1] );
+                    if ( ! $state ) $state = trim( $m[2] );
+                }
+            }
+        }
+
+        return [ $city, $state ];
     }
 }
