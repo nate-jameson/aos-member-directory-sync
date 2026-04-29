@@ -268,7 +268,7 @@ jQuery(function($) {
         var $status = $('#aos-ms-new-status');
 
         // Show progressive status so user knows the enrichment is running
-        setStatus($status, '🔍 Searching for ' + escHtml(c.display_name) + ''s practice website…', 'loading');
+        setStatus($status, '🔍 Searching for ' + escHtml(c.display_name) + '\'s practice website...', 'loading');
 
         // After a short moment update label to show scraping is happening
         var enrichTimer = setTimeout(function() {
