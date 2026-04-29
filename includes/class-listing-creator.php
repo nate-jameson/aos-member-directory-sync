@@ -24,7 +24,7 @@ class AOS_MS_Listing_Creator {
      * @param array  $contact        CiviCRM contact data
      * @param string $credentialing  Pre-resolved credential label(s), e.g. 'Diplomate' or 'Fellowship, Diplomate'
      * @param array  $ai_data        Optional Gemini enrichment output
-     * @param int    $directory_id   Directorist directory ID
+     * @param int    $directory_id   Directorist directory ID (34 = Provider, 115 = Practice)
      * @return int|WP_Error  Post ID on success.
      */
     public static function create_draft( $contact, $credentialing = '', $ai_data = [], $directory_id = 0 ) {
@@ -36,9 +36,21 @@ class AOS_MS_Listing_Creator {
         $title = 'Dr. ' . $name;
         $title = preg_replace( '/^(Dr\.?\s+)+/i', 'Dr. ', $title );
 
-        $bio       = $ai_data['biography'] ?? '';
-        $specialty = $ai_data['specialty'] ?? '';
+        $bio           = $ai_data['biography'] ?? '';
+        $specialty     = $ai_data['specialty'] ?? '';
         $credentialing = sanitize_text_field( $credentialing );
+
+        // Use AI-discovered website if CiviCRM doesn't have one
+        $website = $ai_data['website_url'] ?? $contact['website'] ?? '';
+
+        // Build a full address string for Directorist
+        $address_parts = array_filter( [
+            $contact['street_address']  ?? '',
+            $contact['city']            ?? '',
+            $contact['state_province']  ?? '',
+            $contact['postal_code']     ?? '',
+        ] );
+        $full_address = implode( ', ', $address_parts );
 
         $post_id = wp_insert_post( [
             'post_title'   => $title,
@@ -49,35 +61,37 @@ class AOS_MS_Listing_Creator {
 
         if ( is_wp_error( $post_id ) ) return $post_id;
 
-        // Directorist directory
-        update_post_meta( $post_id, '_atbdp_listing_type', $directory_id );
-        wp_set_object_terms( $post_id, $directory_id, 'atbdp_listing_type' );
+        // ── Directorist directory type ─────────────────────────────────────────
+        // _directory_type is the post meta key Directorist uses (confirmed from DB).
+        // ATBDP_TYPE is the taxonomy constant defined by Directorist (at_biz_dir-type).
+        update_post_meta( $post_id, '_directory_type', $directory_id );
+        $atbdp_type_taxonomy = defined( 'ATBDP_TYPE' ) ? ATBDP_TYPE : 'at_biz_dir-type';
+        wp_set_object_terms( $post_id, $directory_id, $atbdp_type_taxonomy );
 
-        // Contact info
-        update_post_meta( $post_id, '_atbdp_email',   sanitize_email( $contact['email'] ?? '' ) );
-        update_post_meta( $post_id, '_atbdp_phone',   sanitize_text_field( $contact['phone'] ?? '' ) );
-        update_post_meta( $post_id, '_atbdp_website', esc_url_raw( $contact['website'] ?? '' ) );
+        // ── Contact fields — meta keys derived from Directorist field_key names ──
+        // Pattern: form field name → '_' + field_name in post meta.
+        update_post_meta( $post_id, '_email',   sanitize_email( $contact['email'] ?? '' ) );
+        update_post_meta( $post_id, '_phone',   sanitize_text_field( $contact['phone'] ?? '' ) );
+        update_post_meta( $post_id, '_website', esc_url_raw( $website ) );
+        update_post_meta( $post_id, '_address', sanitize_text_field( $full_address ) );
+        update_post_meta( $post_id, '_zip',     sanitize_text_field( $contact['postal_code'] ?? '' ) );
 
-        // Address
-        update_post_meta( $post_id, '_atbdp_address',  sanitize_text_field( $contact['street_address'] ?? '' ) );
-        update_post_meta( $post_id, '_atbdp_zip',      sanitize_text_field( $contact['postal_code'] ?? '' ) );
-        update_post_meta( $post_id, '_atbdp_city',     sanitize_text_field( $contact['city'] ?? '' ) );
-        update_post_meta( $post_id, '_atbdp_state',    sanitize_text_field( $contact['state_province'] ?? '' ) );
-        update_post_meta( $post_id, '_atbdp_country',  sanitize_text_field( $contact['country'] ?? '' ) );
-
-        // Custom fields
+        // ── Custom fields ──────────────────────────────────────────────────────
+        // _tagline = specialty (the "tagline" field in Directorist form builder)
         if ( $specialty ) {
-            update_post_meta( $post_id, '_atbdp_custom_specialty', $specialty );
-        }
-        if ( $credentialing ) {
-            update_post_meta( $post_id, '_atbdp_custom_credentialing_level', $credentialing );
+            update_post_meta( $post_id, '_tagline', sanitize_text_field( $specialty ) );
         }
 
-        // Store CiviCRM contact ID for future syncing
+        // _custom-radio = credentialing level (Achievement / Fellowship / Diplomate)
+        if ( $credentialing ) {
+            update_post_meta( $post_id, '_custom-radio', sanitize_text_field( $credentialing ) );
+        }
+
+        // ── CiviCRM tracking ──────────────────────────────────────────────────
         update_post_meta( $post_id, '_aos_civicrm_contact_id', intval( $contact['id'] ?? 0 ) );
         update_post_meta( $post_id, '_aos_ai_confidence', $ai_data['confidence'] ?? 'none' );
 
-        // Featured image — download and attach if AI found one
+        // ── Featured image — download & attach if AI found one ─────────────────
         $image_url = $ai_data['image_url'] ?? '';
         if ( $image_url ) {
             require_once ABSPATH . 'wp-admin/includes/media.php';
@@ -87,10 +101,12 @@ class AOS_MS_Listing_Creator {
             $attachment_id = media_sideload_image( $image_url, $post_id, $title, 'id' );
             if ( ! is_wp_error( $attachment_id ) ) {
                 set_post_thumbnail( $post_id, $attachment_id );
+                // Also set Directorist profile image meta
+                update_post_meta( $post_id, '_listing_prv_img', $attachment_id );
             }
         }
 
-        // Geocode address if possible
+        // ── Geocode address ────────────────────────────────────────────────────
         self::geocode_and_save( $post_id, $contact );
 
         return $post_id;
@@ -106,12 +122,16 @@ class AOS_MS_Listing_Creator {
         ] );
     }
 
+    /**
+     * Geocode the contact address and save _manual_lat / _manual_lng.
+     * Directorist reads these meta keys to display the map pin.
+     */
     private static function geocode_and_save( $post_id, $contact ) {
         $address_parts = array_filter( [
-            $contact['street_address'] ?? '',
-            $contact['city'] ?? '',
-            $contact['state_province'] ?? '',
-            $contact['postal_code'] ?? '',
+            $contact['street_address']  ?? '',
+            $contact['city']            ?? '',
+            $contact['state_province']  ?? '',
+            $contact['postal_code']     ?? '',
         ] );
         if ( empty( $address_parts ) ) return;
 
@@ -125,9 +145,14 @@ class AOS_MS_Listing_Creator {
         $data = json_decode( wp_remote_retrieve_body( $response ), true );
         if ( empty( $data[0]['lat'] ) ) return;
 
-        update_post_meta( $post_id, '_atbdp_latitude',  (float) $data[0]['lat'] );
-        update_post_meta( $post_id, '_atbdp_longitude', (float) $data[0]['lon'] );
-        update_post_meta( $post_id, '_atbdp_post_latitude',  (float) $data[0]['lat'] );
-        update_post_meta( $post_id, '_atbdp_post_longitude', (float) $data[0]['lon'] );
+        $lat = (float) $data[0]['lat'];
+        $lng = (float) $data[0]['lon'];
+
+        // Directorist uses _manual_lat / _manual_lng for map pins
+        update_post_meta( $post_id, '_manual_lat', $lat );
+        update_post_meta( $post_id, '_manual_lng', $lng );
+        // Also set the legacy keys Directorist may still read in older versions
+        update_post_meta( $post_id, '_latitude',  $lat );
+        update_post_meta( $post_id, '_longitude', $lng );
     }
 }
