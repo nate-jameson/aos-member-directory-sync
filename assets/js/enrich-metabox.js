@@ -95,7 +95,11 @@ jQuery( function ( $ ) {
                 status.css( 'color', '#2a9e4f' ).text( res.data.message );
                 enrichBtn.text( '\u2713 Done \u2014 reload to see changes' );
             } else {
-                status.css( 'color', '#c00' ).text( 'Error: ' + ( res.data.message || 'Unknown error' ) );
+                var msg = res.data.message || 'Unknown error';
+                if ( res.data.debug ) {
+                    msg += ' (bio_length=' + res.data.debug.bio_length + ', specialty="' + res.data.debug.specialty + '", website="' + res.data.debug.website + '")';
+                }
+                status.css( 'color', '#c00' ).text( 'Error: ' + msg );
                 enrichBtn.prop( 'disabled', false ).text( '\u2728 Step 2: Enrich From AI' );
             }
         } )

@@ -37,7 +37,7 @@ class AOS_MS_Enrich_Metabox {
         $existing_website = get_post_meta( $post->ID, '_website', true );
         ?>
         <div id="aos-enrich-wrap" style="font-size:13px;">
-            <p style="margin:0 0 8px;color:#555;">Auto-fill biography, specialty, contact info, and headshot using AI.</p>
+            <p style="margin:0 0 8px;color:#555;">Auto-fill biography, specialty, contact info, and headshot using AI. <strong>Overwrites existing values.</strong></p>
 
             <!-- Step 1: Find Website -->
             <div id="aos-step-find">
@@ -105,7 +105,7 @@ class AOS_MS_Enrich_Metabox {
             ] );
         }
 
-        $title = $post->post_title;
+        $title       = $post->post_title;
         $search_name = preg_replace( '/^Dr\.?\s+/i', '', $title );
 
         [ $city, $state ] = self::extract_city_state( $post_id );
@@ -126,7 +126,7 @@ class AOS_MS_Enrich_Metabox {
     }
 
     // -------------------------------------------------------------------------
-    // Step 2 AJAX — enrich using a confirmed URL
+    // Step 2 AJAX — enrich using a confirmed URL (always overwrites)
     // -------------------------------------------------------------------------
 
     public static function ajax_enrich() {
@@ -168,31 +168,30 @@ class AOS_MS_Enrich_Metabox {
 
         $fields_updated = [];
 
-        // Website
+        // Website — always save if we have one
         $w = $website_url ?: ( $ai_data['website_url'] ?? '' );
-        if ( $w && ! get_post_meta( $post_id, '_website', true ) ) {
+        if ( $w ) {
             update_post_meta( $post_id, '_website', sanitize_text_field( $w ) );
             $fields_updated[] = 'website';
         }
 
-        // Specialty / tagline
-        $specialty = $ai_data['specialty'] ?? '';
-        if ( $specialty && ! get_post_meta( $post_id, '_tagline', true ) ) {
+        // Specialty / tagline — always overwrite
+        $specialty = trim( $ai_data['specialty'] ?? '' );
+        if ( $specialty ) {
             update_post_meta( $post_id, '_tagline', sanitize_text_field( $specialty ) );
             $fields_updated[] = 'specialty';
         }
 
-        // Phone
-        $ai_phone = $ai_data['phone'] ?? '';
+        // Phone — only fill if currently blank (don't overwrite known-good phone)
+        $ai_phone = trim( $ai_data['phone'] ?? '' );
         if ( $ai_phone && ! $phone ) {
             update_post_meta( $post_id, '_phone', sanitize_text_field( $ai_phone ) );
             $fields_updated[] = 'phone';
         }
 
-        // Biography → post_content
-        // Use strip_tags so empty <p></p> blocks don't block the update
-        $bio = $ai_data['biography'] ?? '';
-        if ( $bio && empty( trim( wp_strip_all_tags( $post->post_content ) ) ) ) {
+        // Biography → post_content — always overwrite
+        $bio = trim( $ai_data['biography'] ?? '' );
+        if ( $bio ) {
             wp_update_post( [ 'ID' => $post_id, 'post_content' => wp_kses_post( $bio ) ] );
             $fields_updated[] = 'biography';
         }
@@ -212,16 +211,24 @@ class AOS_MS_Enrich_Metabox {
             }
         }
 
-        $summary = empty( $fields_updated )
-            ? 'No new fields to fill in (all already set or Gemini returned nothing).'
-            : 'Enriched: ' . implode( ', ', $fields_updated ) . '. Reload the page to see changes.';
+        if ( empty( $fields_updated ) ) {
+            // Gemini returned nothing — surface the raw response for debugging
+            wp_send_json_error( [
+                'message'    => 'Gemini returned no usable content.',
+                'debug'      => [
+                    'bio_length' => strlen( $bio ),
+                    'specialty'  => $specialty,
+                    'website'    => $w,
+                    'confidence' => $ai_data['confidence'] ?? null,
+                    'raw'        => $ai_data,
+                ],
+            ] );
+        }
 
         wp_send_json_success( [
-            'message'    => $summary,
+            'message'    => 'Enriched: ' . implode( ', ', $fields_updated ) . '. Reload the page to see changes.',
             'fields'     => $fields_updated,
             'confidence' => $ai_data['confidence'] ?? null,
-            'bio_length' => strlen( $bio ),
-            'specialty'  => $specialty,
         ] );
     }
 
@@ -234,7 +241,6 @@ class AOS_MS_Enrich_Metabox {
      * Returns [ $city, $state ].
      */
     private static function extract_city_state( $post_id ) {
-        // Direct meta keys
         $city  = get_post_meta( $post_id, '_city', true )
                ?: get_post_meta( $post_id, '_city_name', true )
                ?: get_post_meta( $post_id, '_atbdp_city', true )
@@ -246,10 +252,9 @@ class AOS_MS_Enrich_Metabox {
                ?: '';
 
         // If still empty, try to parse from _address: "Street, City, State ZIP"
-        if ( ( ! $city || ! $state ) ) {
+        if ( ! $city || ! $state ) {
             $address = get_post_meta( $post_id, '_address', true );
             if ( $address ) {
-                // Try to parse "..., City, ST 12345" or "..., City, State"
                 if ( preg_match( '/,\s*([^,]+),\s*([A-Za-z ]{2,20})\s*\d{0,5}\s*$/', $address, $m ) ) {
                     if ( ! $city )  $city  = trim( $m[1] );
                     if ( ! $state ) $state = trim( $m[2] );
