@@ -94,8 +94,11 @@ class AOS_MS_Admin {
                                             <?php
                                             $current = AOS_MS_Settings::get( $key, $field['default'] ?? '' );
                                             foreach ( $field['options'] as $val => $label ) :
+                                                $is_sep = strpos( $val, '---' ) === 0;
                                             ?>
-                                                <option value="<?php echo esc_attr( $val ); ?>" <?php selected( $current, $val ); ?>>
+                                                <option value="<?php echo esc_attr( $val ); ?>"
+                                                    <?php selected( $current, $val ); ?>
+                                                    <?php if ( $is_sep ) echo 'disabled style="font-weight:bold;color:#555;"'; ?>>
                                                     <?php echo esc_html( $label ); ?>
                                                 </option>
                                             <?php endforeach; ?>
