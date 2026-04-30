@@ -57,7 +57,7 @@ class AOS_MS_Enrich_Metabox {
                 </button>
             </div>
 
-            <div id="aos-enrich-status" style="margin-top:8px;font-size:12px;color:#555;line-height:1.5;"></div>
+            <div id="aos-enrich-status" style="margin-top:8px;font-size:12px;color:#555;line-height:1.5;white-space:pre-wrap;word-break:break-word;"></div>
         </div>
         <?php
     }
@@ -66,6 +66,10 @@ class AOS_MS_Enrich_Metabox {
         if ( ! in_array( $hook, [ 'post.php', 'post-new.php' ] ) ) return;
         $screen = get_current_screen();
         if ( ! $screen || $screen->post_type !== 'at_biz_dir' ) return;
+
+        // Use $_GET['post'] as the most reliable source of the current post ID
+        // in an admin_enqueue_scripts context.
+        $post_id = isset( $_GET['post'] ) ? (int) $_GET['post'] : (int) get_the_ID();
 
         wp_enqueue_script(
             'aos-ms-enrich-metabox',
@@ -78,7 +82,7 @@ class AOS_MS_Enrich_Metabox {
         wp_localize_script( 'aos-ms-enrich-metabox', 'aosMsEnrich', [
             'ajaxUrl' => admin_url( 'admin-ajax.php' ),
             'nonce'   => wp_create_nonce( 'aos_ms_enrich_listing' ),
-            'postId'  => get_the_ID(),
+            'postId'  => $post_id,
         ] );
     }
 
@@ -91,10 +95,16 @@ class AOS_MS_Enrich_Metabox {
         if ( ! current_user_can( 'edit_posts' ) ) wp_send_json_error( [ 'message' => 'Unauthorized.' ] );
 
         $post_id = (int) ( $_POST['post_id'] ?? 0 );
-        if ( ! $post_id ) wp_send_json_error( [ 'message' => 'No post ID.' ] );
+        if ( ! $post_id ) wp_send_json_error( [ 'message' => 'No post ID received.' ] );
 
         $post = get_post( $post_id );
-        if ( ! $post || $post->post_type !== 'at_biz_dir' ) wp_send_json_error( [ 'message' => 'Invalid listing.' ] );
+        if ( ! $post || $post->post_type !== 'at_biz_dir' ) {
+            wp_send_json_error( [
+                'message'   => 'Invalid listing.',
+                'post_id'   => $post_id,
+                'post_type' => $post ? $post->post_type : 'null',
+            ] );
+        }
 
         // Already has a website — return it immediately
         $existing = get_post_meta( $post_id, '_website', true );
@@ -126,7 +136,7 @@ class AOS_MS_Enrich_Metabox {
     }
 
     // -------------------------------------------------------------------------
-    // Step 2 AJAX — enrich using a confirmed URL (always overwrites)
+    // Step 2 AJAX — enrich using a confirmed URL
     // -------------------------------------------------------------------------
 
     public static function ajax_enrich() {
@@ -136,10 +146,31 @@ class AOS_MS_Enrich_Metabox {
         $post_id     = (int) ( $_POST['post_id'] ?? 0 );
         $website_url = esc_url_raw( trim( $_POST['website_url'] ?? '' ) );
 
-        if ( ! $post_id ) wp_send_json_error( [ 'message' => 'No post ID.' ] );
+        // --- Diagnostic step: verify post ID and canary meta save -----------
+        $diag = [
+            'received_post_id'  => $post_id,
+            'received_website'  => $website_url,
+            'canary_save'       => null,
+            'canary_readback'   => null,
+        ];
+
+        if ( ! $post_id ) {
+            wp_send_json_error( array_merge( $diag, [ 'message' => 'No post ID received from JS.' ] ) );
+        }
+
+        // Test that we can write to this post's meta at all
+        $canary_val = 'aos_test_' . time();
+        $canary_ok  = update_post_meta( $post_id, '_aos_enrich_canary', $canary_val );
+        $diag['canary_save']     = $canary_ok !== false ? 'ok' : 'FAILED';
+        $diag['canary_readback'] = get_post_meta( $post_id, '_aos_enrich_canary', true );
 
         $post = get_post( $post_id );
-        if ( ! $post || $post->post_type !== 'at_biz_dir' ) wp_send_json_error( [ 'message' => 'Invalid listing.' ] );
+        if ( ! $post || $post->post_type !== 'at_biz_dir' ) {
+            wp_send_json_error( array_merge( $diag, [
+                'message'   => 'Invalid listing.',
+                'post_type' => $post ? $post->post_type : 'null',
+            ] ) );
+        }
 
         $title       = $post->post_title;
         $search_name = preg_replace( '/^Dr\.?\s+/i', '', $title );
@@ -163,40 +194,51 @@ class AOS_MS_Enrich_Metabox {
         $ai_data = $gemini->enrich_listing( $contact, $website_url );
 
         if ( isset( $ai_data['error'] ) ) {
-            wp_send_json_error( [ 'message' => 'Gemini error: ' . $ai_data['error'] ] );
+            wp_send_json_error( array_merge( $diag, [
+                'message' => 'Gemini error: ' . $ai_data['error'],
+                'ai_data' => $ai_data,
+            ] ) );
         }
 
         $fields_updated = [];
+        $fields_debug   = [];
 
         // Website — always save if we have one
         $w = $website_url ?: ( $ai_data['website_url'] ?? '' );
         if ( $w ) {
-            update_post_meta( $post_id, '_website', sanitize_text_field( $w ) );
+            $r = update_post_meta( $post_id, '_website', sanitize_text_field( $w ) );
+            $fields_debug['website'] = [ 'value' => $w, 'result' => $r !== false ? 'ok' : 'no-change' ];
             $fields_updated[] = 'website';
         }
 
         // Specialty / tagline — always overwrite
         $specialty = trim( $ai_data['specialty'] ?? '' );
         if ( $specialty ) {
-            update_post_meta( $post_id, '_tagline', sanitize_text_field( $specialty ) );
+            $r = update_post_meta( $post_id, '_tagline', sanitize_text_field( $specialty ) );
+            $fields_debug['specialty'] = [ 'value' => $specialty, 'result' => $r !== false ? 'ok' : 'no-change' ];
             $fields_updated[] = 'specialty';
         }
 
-        // Phone — only fill if currently blank (don't overwrite known-good phone)
+        // Phone — only fill if currently blank
         $ai_phone = trim( $ai_data['phone'] ?? '' );
         if ( $ai_phone && ! $phone ) {
-            update_post_meta( $post_id, '_phone', sanitize_text_field( $ai_phone ) );
+            $r = update_post_meta( $post_id, '_phone', sanitize_text_field( $ai_phone ) );
+            $fields_debug['phone'] = [ 'value' => $ai_phone, 'result' => $r !== false ? 'ok' : 'no-change' ];
             $fields_updated[] = 'phone';
         }
 
         // Biography → post_content — always overwrite
         $bio = trim( $ai_data['biography'] ?? '' );
         if ( $bio ) {
-            wp_update_post( [ 'ID' => $post_id, 'post_content' => wp_kses_post( $bio ) ] );
+            $r = wp_update_post( [ 'ID' => $post_id, 'post_content' => wp_kses_post( $bio ) ] );
+            $fields_debug['biography'] = [
+                'length' => strlen( $bio ),
+                'result' => is_wp_error( $r ) ? $r->get_error_message() : ( $r ? 'ok' : 'FAILED' ),
+            ];
             $fields_updated[] = 'biography';
         }
 
-        // Headshot — only if no featured image already
+        // Headshot — only if no featured image
         $image_url = $ai_data['image_url'] ?? '';
         if ( $image_url && ! has_post_thumbnail( $post_id ) ) {
             require_once ABSPATH . 'wp-admin/includes/media.php';
@@ -207,28 +249,21 @@ class AOS_MS_Enrich_Metabox {
             if ( ! is_wp_error( $attachment_id ) ) {
                 set_post_thumbnail( $post_id, $attachment_id );
                 update_post_meta( $post_id, '_listing_prv_img', $attachment_id );
+                $fields_debug['headshot'] = [ 'attachment_id' => $attachment_id, 'result' => 'ok' ];
                 $fields_updated[] = 'headshot';
+            } else {
+                $fields_debug['headshot'] = [ 'result' => 'error: ' . $image_url->get_error_message() ];
             }
         }
 
-        if ( empty( $fields_updated ) ) {
-            // Gemini returned nothing — surface the raw response for debugging
-            wp_send_json_error( [
-                'message'    => 'Gemini returned no usable content.',
-                'debug'      => [
-                    'bio_length' => strlen( $bio ),
-                    'specialty'  => $specialty,
-                    'website'    => $w,
-                    'confidence' => $ai_data['confidence'] ?? null,
-                    'raw'        => $ai_data,
-                ],
-            ] );
-        }
-
         wp_send_json_success( [
-            'message'    => 'Enriched: ' . implode( ', ', $fields_updated ) . '. Reload the page to see changes.',
-            'fields'     => $fields_updated,
-            'confidence' => $ai_data['confidence'] ?? null,
+            'message'        => empty( $fields_updated )
+                                ? 'Gemini returned no usable content — check debug below.'
+                                : 'Enriched: ' . implode( ', ', $fields_updated ) . '. Reload the page to see changes.',
+            'fields_updated' => $fields_updated,
+            'fields_debug'   => $fields_debug,
+            'diag'           => $diag,
+            'ai_raw'         => $ai_data,
         ] );
     }
 
