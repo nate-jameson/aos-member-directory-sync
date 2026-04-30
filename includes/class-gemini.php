@@ -322,10 +322,13 @@ class AOS_MS_Gemini {
      */
     public function scrape_url( $url ) {
         $response = wp_remote_get( $url, [
-            'timeout'   => 20,
-            'sslverify' => false,
-            'headers'   => [
-                'User-Agent' => 'Mozilla/5.0 (compatible; AOS-Member-Sync/1.0)',
+            'timeout'      => 20,
+            'sslverify'    => false,
+            'redirection'  => 5,
+            'headers'      => [
+                'User-Agent'      => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                'Accept'          => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language' => 'en-US,en;q=0.5',
             ],
         ] );
 
@@ -379,7 +382,20 @@ class AOS_MS_Gemini {
         $website_context = '';
         if ( ! empty( $website ) ) {
             $text = $this->scrape_url( $website );
-            if ( $text ) {
+
+            // If the specific URL gave very little content, also try the homepage
+            if ( strlen( $text ) < 300 ) {
+                $parsed_url   = wp_parse_url( $website );
+                $homepage_url = ( $parsed_url['scheme'] ?? 'https' ) . '://' . ( $parsed_url['host'] ?? '' );
+                if ( $homepage_url !== rtrim( $website, '/' ) ) {
+                    $homepage_text = $this->scrape_url( $homepage_url );
+                    if ( strlen( $homepage_text ) > strlen( $text ) ) {
+                        $text = $homepage_text;
+                    }
+                }
+            }
+
+            if ( $text && strlen( $text ) >= 50 ) {
                 $website_context = "Content scraped from their practice website ({$website}):\n\n{$text}\n\n";
             } else {
                 $website_context = "Their practice website is: {$website} (page could not be scraped — write a professional general bio).\n";
@@ -433,7 +449,11 @@ PROMPT;
             ],
             'generationConfig' => [
                 'temperature'     => 0.4,
-                'maxOutputTokens' => 600,
+                'maxOutputTokens' => 2048,
+                // Disable built-in "thinking" on Gemini 2.5 models — thinking tokens
+                // count against maxOutputTokens and can consume the entire budget,
+                // leaving no room for the actual response.
+                'thinkingConfig'  => [ 'thinkingBudget' => 0 ],
             ],
         ];
 
