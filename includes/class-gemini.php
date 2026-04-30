@@ -318,7 +318,7 @@ class AOS_MS_Gemini {
     // -------------------------------------------------------------------------
 
     /**
-     * Fetch a URL and return stripped text content (max 6 000 chars).
+     * Fetch a single URL and return stripped text content (max 6 000 chars).
      */
     public function scrape_url( $url ) {
         $response = wp_remote_get( $url, [
@@ -342,6 +342,51 @@ class AOS_MS_Gemini {
         $text = preg_replace( '/[ \t]+/', ' ', $text );
         $text = preg_replace( '/(\r?\n){2,}/', "\n", trim( $text ) );
         return substr( $text, 0, 6000 );
+    }
+
+    /**
+     * Scrape multiple common pages from a practice website and combine text.
+     * Tries homepage + about/team/doctor sub-pages sequentially.
+     * Total output capped at 8 000 chars across all pages.
+     *
+     * @param  string $website  Any URL on the site (homepage or deep link)
+     * @return string Combined stripped text, or '' if nothing usable
+     */
+    private function scrape_multiple_pages( $website ) {
+        $parsed = wp_parse_url( $website );
+        $root   = ( $parsed['scheme'] ?? 'https' ) . '://' . ( $parsed['host'] ?? '' );
+
+        // Always start with the exact URL provided, then try common sub-pages
+        $urls_to_try = array_unique( array_filter( [
+            $website,
+            $root,
+            $root . '/about',
+            $root . '/about-us',
+            $root . '/our-team',
+            $root . '/team',
+            $root . '/our-doctor',
+            $root . '/meet-the-doctor',
+            $root . '/doctors',
+            $root . '/staff',
+        ] ) );
+
+        $parts = [];
+        $total = 0;
+        $limit = 8000;
+
+        foreach ( $urls_to_try as $url ) {
+            if ( $total >= $limit ) break;
+
+            $text = $this->scrape_url( $url );
+
+            if ( strlen( $text ) > 100 ) {
+                $chunk   = substr( $text, 0, $limit - $total );
+                $parts[] = "=== {$url} ===\n{$chunk}";
+                $total  += strlen( $chunk );
+            }
+        }
+
+        return implode( "\n\n", $parts );
     }
 
     // -------------------------------------------------------------------------
@@ -378,27 +423,17 @@ class AOS_MS_Gemini {
             }
         }
 
-        // --- Scrape website -----------------------------------------------
+        // --- Scrape website (multiple pages) ----------------------------------
         $website_context = '';
+        $scrape_length   = 0;
         if ( ! empty( $website ) ) {
-            $text = $this->scrape_url( $website );
+            $text          = $this->scrape_multiple_pages( $website );
+            $scrape_length = strlen( $text );
 
-            // If the specific URL gave very little content, also try the homepage
-            if ( strlen( $text ) < 300 ) {
-                $parsed_url   = wp_parse_url( $website );
-                $homepage_url = ( $parsed_url['scheme'] ?? 'https' ) . '://' . ( $parsed_url['host'] ?? '' );
-                if ( $homepage_url !== rtrim( $website, '/' ) ) {
-                    $homepage_text = $this->scrape_url( $homepage_url );
-                    if ( strlen( $homepage_text ) > strlen( $text ) ) {
-                        $text = $homepage_text;
-                    }
-                }
-            }
-
-            if ( $text && strlen( $text ) >= 50 ) {
+            if ( $scrape_length >= 50 ) {
                 $website_context = "Content scraped from their practice website ({$website}):\n\n{$text}\n\n";
             } else {
-                $website_context = "Their practice website is: {$website} (page could not be scraped — write a professional general bio).\n";
+                $website_context = "Their practice website is: {$website} (site content could not be scraped — use Google Search to find information about this provider and write a professional bio).\n";
             }
         }
 
@@ -446,6 +481,11 @@ PROMPT;
         $body = [
             'contents' => [
                 [ 'parts' => [ [ 'text' => $prompt ] ] ]
+            ],
+            // Google Search grounding: lets Gemini search the web for the provider
+            // when scraped content is minimal (e.g. JS-rendered sites).
+            'tools' => [
+                [ 'google_search' => (object) [] ],
             ],
             'generationConfig' => [
                 'temperature'     => 0.4,
@@ -504,7 +544,21 @@ PROMPT;
         }
 
         $data = json_decode( $raw_body, true );
-        $text = $data['candidates'][0]['content']['parts'][0]['text'] ?? '';
+
+        // Gemini 2.5 thinking models may return multiple parts:
+        // thought parts have {"thought": true, "text": "..."} — skip those.
+        // We want the last non-thought part which contains the actual response.
+        $parts     = $data['candidates'][0]['content']['parts'] ?? [];
+        $text      = '';
+        foreach ( $parts as $part ) {
+            if ( empty( $part['thought'] ) && ! empty( $part['text'] ) ) {
+                $text = $part['text']; // keep iterating — last one wins
+            }
+        }
+        // Fallback: just grab last part text
+        if ( $text === '' && ! empty( $parts ) ) {
+            $text = end( $parts )['text'] ?? '';
+        }
 
         // Strip accidental markdown fences
         $text = preg_replace( '/^```(?:json)?\s*/i', '', trim( $text ) );
@@ -515,7 +569,7 @@ PROMPT;
             // Return raw text as biography so we can see what Gemini actually said
             $parsed = [ 'biography' => $text, 'specialty' => '', 'confidence' => 'low', 'gemini_raw_text' => substr( $raw_body, 0, 500 ) ];
         }
-        $parsed['scrape_length'] = strlen( $website_context );
+        $parsed['scrape_length'] = $scrape_length;
 
         $parsed['website_url']    = $website;
         $parsed['website_source'] = $website_source;
