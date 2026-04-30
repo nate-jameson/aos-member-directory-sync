@@ -190,8 +190,13 @@ class AOS_MS_Enrich_Metabox {
             'website'        => $website_url,
         ];
 
+        // Detect whether this is a Provider (dir 34) or Practice (dir 115) listing
+        $directory_type_id = (int) get_post_meta( $post_id, '_directory_type', true );
+        $listing_type      = ( $directory_type_id === 115 ) ? 'practice' : 'provider';
+
         $gemini  = new AOS_MS_Gemini();
-        $ai_data = $gemini->enrich_listing( $contact, $website_url );
+        $ai_data = $gemini->enrich_listing( $contact, $website_url, $listing_type );
+        $ai_data['listing_type_used'] = $listing_type; // surface in debug
 
         if ( isset( $ai_data['error'] ) ) {
             wp_send_json_error( array_merge( $diag, [

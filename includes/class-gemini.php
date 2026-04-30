@@ -352,7 +352,7 @@ class AOS_MS_Gemini {
      *   biography, specialty, confidence (high|low),
      *   website_url (discovered or supplied), website_source (civicrm|search|none)
      */
-    public function enrich_listing( $contact, $website_url = '' ) {
+    public function enrich_listing( $contact, $website_url = '', $listing_type = 'provider' ) {
         $name  = $contact['display_name'] ?? trim( ( $contact['first_name'] ?? '' ) . ' ' . ( $contact['last_name'] ?? '' ) );
         $city  = $contact['city']           ?? '';
         $state = $contact['state_province'] ?? '';
@@ -384,7 +384,27 @@ class AOS_MS_Gemini {
         }
 
         // --- Build Gemini prompt ------------------------------------------
-        $prompt = <<<PROMPT
+        if ( $listing_type === 'practice' ) {
+            $prompt = <<<PROMPT
+You are helping populate a professional directory listing for a dental practice that is a member of the American Orthodontic Society (AOS). AOS members are dental practices providing orthodontic services — they are NOT exclusively orthodontic-only offices.
+
+Practice: {$name}
+Location: {$city}, {$state}
+{$website_context}
+Based on the information above, write a professional practice description (3–5 sentences) suitable for a member directory listing. Use specific details from the website content if provided. Focus on the services offered, the team, patient experience, and what makes this practice distinctive. If no website content was available, write a general professional description for a dental practice offering orthodontic services.
+
+Also suggest:
+- A short specialty/tagline description (1 line, e.g. "Family Dentistry & Orthodontics")
+
+Return your response ONLY as a JSON object with these exact keys:
+- "biography": string (the practice description)
+- "specialty": string
+- "confidence": "high" if website content was provided and used, "low" if generic
+
+No markdown fences. No extra keys. Valid JSON only.
+PROMPT;
+        } else {
+            $prompt = <<<PROMPT
 You are helping populate a professional directory listing for a dental provider who is a member of the American Orthodontic Society (AOS). AOS members are dentists and pediatric dentists who provide orthodontic services — they are NOT necessarily orthodontists by specialty.
 
 Doctor: {$name}
@@ -402,6 +422,7 @@ Return your response ONLY as a JSON object with these exact keys:
 
 No markdown fences. No extra keys. Valid JSON only.
 PROMPT;
+        }
 
         $body = [
             'contents' => [
@@ -427,10 +448,25 @@ PROMPT;
                 'error'          => $response->get_error_message(),
                 'website_url'    => $website,
                 'website_source' => $website_source,
+                'scrape_length'  => strlen( $website_context ),
             ];
         }
 
-        $data = json_decode( wp_remote_retrieve_body( $response ), true );
+        $http_code  = wp_remote_retrieve_response_code( $response );
+        $raw_body   = wp_remote_retrieve_body( $response );
+
+        if ( $http_code !== 200 ) {
+            return [
+                'error'          => "Gemini HTTP {$http_code}",
+                'gemini_http'    => $http_code,
+                'gemini_body'    => substr( $raw_body, 0, 800 ),
+                'website_url'    => $website,
+                'website_source' => $website_source,
+                'scrape_length'  => strlen( $website_context ),
+            ];
+        }
+
+        $data = json_decode( $raw_body, true );
         $text = $data['candidates'][0]['content']['parts'][0]['text'] ?? '';
 
         // Strip accidental markdown fences
@@ -439,8 +475,10 @@ PROMPT;
 
         $parsed = json_decode( $text, true );
         if ( ! $parsed ) {
-            $parsed = [ 'biography' => $text, 'specialty' => '', 'confidence' => 'low' ];
+            // Return raw text as biography so we can see what Gemini actually said
+            $parsed = [ 'biography' => $text, 'specialty' => '', 'confidence' => 'low', 'gemini_raw_text' => substr( $raw_body, 0, 500 ) ];
         }
+        $parsed['scrape_length'] = strlen( $website_context );
 
         $parsed['website_url']    = $website;
         $parsed['website_source'] = $website_source;

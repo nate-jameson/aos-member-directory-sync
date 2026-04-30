@@ -111,7 +111,16 @@ jQuery( function ( $ ) {
                 var ai = res.data.ai_raw;
                 debug += '\nAI: bio=' + ( ai.biography ? ai.biography.length + 'ch' : '0' )
                        + ' specialty="' + ( ai.specialty || '' ) + '"'
-                       + ' confidence=' + ( ai.confidence || '?' );
+                       + ' confidence=' + ( ai.confidence || '?' )
+                       + ' scrape=' + ( ai.scrape_length || 0 ) + 'ch';
+                if ( ai.gemini_http ) {
+                    debug += '\nGemini HTTP ' + ai.gemini_http + ': ' + ( ai.gemini_body || '' );
+                }
+                if ( ai.gemini_raw_text ) {
+                    debug += '\nGemini raw: ' + ai.gemini_raw_text;
+                }
+                // Full dump so nothing is hidden
+                debug += '\nFULL_AI_RAW: ' + JSON.stringify( ai );
             }
             if ( res.success ) {
                 status.css( 'color', '#2a9e4f' ).text( res.data.message + debug );
