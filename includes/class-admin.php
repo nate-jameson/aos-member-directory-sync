@@ -89,14 +89,27 @@ class AOS_MS_Admin {
                             <tr>
                                 <th><label for="<?php echo esc_attr( $key ); ?>"><?php echo esc_html( $field['label'] ); ?></label></th>
                                 <td>
-                                    <input
-                                        type="<?php echo esc_attr( $field['type'] ); ?>"
-                                        id="<?php echo esc_attr( $key ); ?>"
-                                        name="<?php echo esc_attr( $key ); ?>"
-                                        value="<?php echo esc_attr( AOS_MS_Settings::get( $key, $field['default'] ?? '' ) ); ?>"
-                                        placeholder="<?php echo esc_attr( $field['placeholder'] ?? '' ); ?>"
-                                        class="regular-text"
-                                    />
+                                    <?php if ( $field['type'] === 'select' ) : ?>
+                                        <select id="<?php echo esc_attr( $key ); ?>" name="<?php echo esc_attr( $key ); ?>" class="regular-text">
+                                            <?php
+                                            $current = AOS_MS_Settings::get( $key, $field['default'] ?? '' );
+                                            foreach ( $field['options'] as $val => $label ) :
+                                            ?>
+                                                <option value="<?php echo esc_attr( $val ); ?>" <?php selected( $current, $val ); ?>>
+                                                    <?php echo esc_html( $label ); ?>
+                                                </option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    <?php else : ?>
+                                        <input
+                                            type="<?php echo esc_attr( $field['type'] ); ?>"
+                                            id="<?php echo esc_attr( $key ); ?>"
+                                            name="<?php echo esc_attr( $key ); ?>"
+                                            value="<?php echo esc_attr( AOS_MS_Settings::get( $key, $field['default'] ?? '' ) ); ?>"
+                                            placeholder="<?php echo esc_attr( $field['placeholder'] ?? '' ); ?>"
+                                            class="regular-text"
+                                        />
+                                    <?php endif; ?>
                                 </td>
                             </tr>
                         <?php endforeach; ?>

@@ -32,6 +32,18 @@ class AOS_MS_Settings {
                 'fields' => [
                     'gemini_api_key' => [ 'label' => 'Gemini API Key',          'type' => 'password', 'placeholder' => '' ],
                     'places_api_key' => [ 'label' => 'Google Places API Key',   'type' => 'password', 'placeholder' => '' ],
+                    'gemini_model'   => [
+                        'label'   => 'Gemini Model',
+                        'type'    => 'select',
+                        'default' => 'gemini-2.5-flash',
+                        'options' => [
+                            'gemini-2.5-flash'     => 'Gemini 2.5 Flash (recommended)',
+                            'gemini-2.5-pro'       => 'Gemini 2.5 Pro',
+                            'gemini-2.0-flash-lite' => 'Gemini 2.0 Flash Lite',
+                            'gemini-1.5-flash'     => 'Gemini 1.5 Flash (stable)',
+                            'gemini-1.5-pro'       => 'Gemini 1.5 Pro',
+                        ],
+                    ],
                 ],
             ],
             'membership_types' => [

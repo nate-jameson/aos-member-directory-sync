@@ -3,14 +3,17 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 class AOS_MS_Gemini {
 
-    const API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+    const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
 
     private $api_key;
     private $places_api_key;
+    private $api_url;
 
     public function __construct() {
         $this->api_key        = AOS_MS_Settings::get( 'gemini_api_key' );
         $this->places_api_key = AOS_MS_Settings::get( 'places_api_key' );
+        $model                = AOS_MS_Settings::get( 'gemini_model', 'gemini-2.5-flash' );
+        $this->api_url        = self::API_BASE . $model . ':generateContent';
     }
 
     public function is_configured() {
@@ -446,7 +449,7 @@ PROMPT;
             }
 
             $response = wp_remote_post(
-                self::API_URL . '?key=' . urlencode( $this->api_key ),
+                $this->api_url . '?key=' . urlencode( $this->api_key ),
                 [
                     'timeout' => 30,
                     'headers' => [ 'Content-Type' => 'application/json' ],
