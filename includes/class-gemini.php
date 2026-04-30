@@ -434,30 +434,44 @@ PROMPT;
             ],
         ];
 
-        $response = wp_remote_post(
-            self::API_URL . '?key=' . urlencode( $this->api_key ),
-            [
-                'timeout' => 30,
-                'headers' => [ 'Content-Type' => 'application/json' ],
-                'body'    => wp_json_encode( $body ),
-            ]
-        );
+        // Retry up to 3 times on 429 with exponential backoff (2s, 4s, 8s)
+        $http_code = 0;
+        $raw_body  = '';
+        $response  = null;
+        $delays    = [ 2, 4, 8 ];
 
-        if ( is_wp_error( $response ) ) {
-            return [
-                'error'          => $response->get_error_message(),
-                'website_url'    => $website,
-                'website_source' => $website_source,
-                'scrape_length'  => strlen( $website_context ),
-            ];
+        for ( $attempt = 0; $attempt <= 3; $attempt++ ) {
+            if ( $attempt > 0 ) {
+                sleep( $delays[ $attempt - 1 ] );
+            }
+
+            $response = wp_remote_post(
+                self::API_URL . '?key=' . urlencode( $this->api_key ),
+                [
+                    'timeout' => 30,
+                    'headers' => [ 'Content-Type' => 'application/json' ],
+                    'body'    => wp_json_encode( $body ),
+                ]
+            );
+
+            if ( is_wp_error( $response ) ) {
+                return [
+                    'error'          => $response->get_error_message(),
+                    'website_url'    => $website,
+                    'website_source' => $website_source,
+                    'scrape_length'  => strlen( $website_context ),
+                ];
+            }
+
+            $http_code = wp_remote_retrieve_response_code( $response );
+            $raw_body  = wp_remote_retrieve_body( $response );
+
+            if ( $http_code !== 429 ) break; // Success or non-retryable error
         }
-
-        $http_code  = wp_remote_retrieve_response_code( $response );
-        $raw_body   = wp_remote_retrieve_body( $response );
 
         if ( $http_code !== 200 ) {
             return [
-                'error'          => "Gemini HTTP {$http_code}",
+                'error'          => "Gemini HTTP {$http_code}" . ( $http_code === 429 ? ' (quota exceeded — try again in a minute, or check your Gemini API billing/quota)' : '' ),
                 'gemini_http'    => $http_code,
                 'gemini_body'    => substr( $raw_body, 0, 800 ),
                 'website_url'    => $website,
