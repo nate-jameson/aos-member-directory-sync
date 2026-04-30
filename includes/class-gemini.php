@@ -437,6 +437,34 @@ class AOS_MS_Gemini {
             }
         }
 
+        // Valid category names for the Directorist listing
+        $valid_categories = [
+            'Adult Braces', 'Airway Focused', 'Clear Aligner Therapy',
+            'Early Interceptive Treatment', 'Kids Braces', 'Myofunctional Therapy',
+            'Pediatric Provider', 'Straight Wire (Braces)',
+        ];
+        $categories_list = implode( ', ', array_map( fn( $c ) => '"' . $c . '"', $valid_categories ) );
+
+        $common_fields = <<<FIELDS
+
+Use Google Search if needed to find accurate information about this provider/practice.
+
+Return your response ONLY as a valid JSON object with these exact keys (no markdown fences, no extra keys):
+- "biography": string (the description/bio — 3 to 5 sentences)
+- "specialty": string (1-line specialty tagline, e.g. "Family Dentistry & Orthodontics")
+- "phone": string (practice phone number with area code, or "" if not found)
+- "address": string (street address only, e.g. "9940 Woodcrest Dr NW", or "")
+- "city": string (city name, e.g. "Coon Rapids", or "")
+- "state": string (full state name, e.g. "Minnesota", or "")
+- "zip": string (5-digit ZIP code, or "")
+- "gender": "Male" or "Female" (infer from name, pronouns, or website; omit key if truly unknown)
+- "accepting_new_patients": true or false (infer from website if possible, default true)
+- "education": array of strings (dental school, residency, board certifications — each as one string; empty array [] if unknown)
+- "awards": array of strings (any professional awards or recognitions; empty array [] if unknown)
+- "categories": array of strings — choose ONLY from these valid values: [{$categories_list}]
+- "confidence": "high" if you found real website content or search results for this specific provider, "low" if purely generic
+FIELDS;
+
         // --- Build Gemini prompt ------------------------------------------
         if ( $listing_type === 'practice' ) {
             $prompt = <<<PROMPT
@@ -445,17 +473,8 @@ You are helping populate a professional directory listing for a dental practice 
 Practice: {$name}
 Location: {$city}, {$state}
 {$website_context}
-Based on the information above, write a professional practice description (3–5 sentences) suitable for a member directory listing. Use specific details from the website content if provided. Focus on the services offered, the team, patient experience, and what makes this practice distinctive. If no website content was available, write a general professional description for a dental practice offering orthodontic services.
-
-Also suggest:
-- A short specialty/tagline description (1 line, e.g. "Family Dentistry & Orthodontics")
-
-Return your response ONLY as a JSON object with these exact keys:
-- "biography": string (the practice description)
-- "specialty": string
-- "confidence": "high" if website content was provided and used, "low" if generic
-
-No markdown fences. No extra keys. Valid JSON only.
+Based on the information above (and Google Search if needed), write a professional practice description (3–5 sentences) for a member directory listing. Use specific details. Focus on the services offered, the team, patient experience, and what makes this practice distinctive.
+{$common_fields}
 PROMPT;
         } else {
             $prompt = <<<PROMPT
@@ -464,17 +483,8 @@ You are helping populate a professional directory listing for a dental provider 
 Doctor: {$name}
 Location: {$city}, {$state}
 {$website_context}
-Based on the information above, write a professional biography paragraph (3–5 sentences) suitable for a member directory listing. Use specific details from the website content if provided. Focus on their professional background, the services they offer, and what makes their practice distinctive. If no website content was available, write a general professional bio for a dental provider offering orthodontic services.
-
-Also suggest:
-- A short specialty description (1 line, e.g. "Orthodontics & Dentofacial Orthopedics")
-
-Return your response ONLY as a JSON object with these exact keys:
-- "biography": string
-- "specialty": string
-- "confidence": "high" if website content was provided and used, "low" if generic
-
-No markdown fences. No extra keys. Valid JSON only.
+Based on the information above (and Google Search if needed), write a professional biography paragraph (3–5 sentences) for a member directory listing. Use specific details about their background, training, and practice.
+{$common_fields}
 PROMPT;
         }
 

@@ -232,6 +232,101 @@ class AOS_MS_Enrich_Metabox {
             $fields_updated[] = 'phone';
         }
 
+        // Address, city, state, zip
+        $ai_address = trim( $ai_data['address'] ?? '' );
+        $ai_city    = trim( $ai_data['city']    ?? '' );
+        $ai_state   = trim( $ai_data['state']   ?? '' );
+        $ai_zip     = trim( $ai_data['zip']     ?? '' );
+
+        if ( $ai_address ) {
+            // Build full formatted address for the _address meta field
+            $full_address = $ai_address;
+            if ( $ai_city )  $full_address .= ', ' . $ai_city;
+            if ( $ai_state ) $full_address .= ', ' . $ai_state;
+            if ( $ai_zip )   $full_address .= ' ' . $ai_zip;
+            update_post_meta( $post_id, '_address', sanitize_text_field( $full_address ) );
+            $fields_debug['address'] = [ 'value' => $full_address, 'result' => 'ok' ];
+            $fields_updated[] = 'address';
+        }
+        if ( $ai_zip ) {
+            update_post_meta( $post_id, '_zip', sanitize_text_field( $ai_zip ) );
+            $fields_updated[] = 'zip';
+        }
+
+        // Geocode address → lat/lng (only if not already set)
+        $existing_lat = get_post_meta( $post_id, '_manual_lat', true );
+        if ( $ai_address && ! $existing_lat ) {
+            $geo_query = trim( "{$ai_address}, {$ai_city}, {$ai_state} {$ai_zip}" );
+            $geocode   = self::geocode_address( $geo_query );
+            if ( $geocode ) {
+                update_post_meta( $post_id, '_manual_lat', sanitize_text_field( $geocode['lat'] ) );
+                update_post_meta( $post_id, '_manual_lng', sanitize_text_field( $geocode['lng'] ) );
+                $fields_debug['coordinates'] = $geocode;
+                $fields_updated[] = 'coordinates';
+            }
+        }
+
+        // Gender
+        $ai_gender = trim( $ai_data['gender'] ?? '' );
+        if ( in_array( $ai_gender, [ 'Male', 'Female' ], true ) ) {
+            update_post_meta( $post_id, '_ddoctors-gender', sanitize_text_field( $ai_gender ) );
+            $fields_debug['gender'] = $ai_gender;
+            $fields_updated[] = 'gender';
+        }
+
+        // Accepting new patients
+        if ( isset( $ai_data['accepting_new_patients'] ) ) {
+            $anp = $ai_data['accepting_new_patients'] ? '1' : '0';
+            update_post_meta( $post_id, '_ddoctors-accept-new-patient', $anp );
+            $fields_debug['accepting_new_patients'] = $anp;
+            $fields_updated[] = 'accepting_new_patients';
+        }
+
+        // Education (custom-bullet-list)
+        $ai_education = $ai_data['education'] ?? [];
+        if ( is_array( $ai_education ) && ! empty( $ai_education ) ) {
+            update_post_meta( $post_id, '_custom-bullet-list', sanitize_textarea_field( implode( "\n", $ai_education ) ) );
+            $fields_debug['education'] = $ai_education;
+            $fields_updated[] = 'education';
+        }
+
+        // Awards (custom-bullet-list-2)
+        $ai_awards = $ai_data['awards'] ?? [];
+        if ( is_array( $ai_awards ) && ! empty( $ai_awards ) ) {
+            update_post_meta( $post_id, '_custom-bullet-list-2', sanitize_textarea_field( implode( "\n", $ai_awards ) ) );
+            $fields_debug['awards'] = $ai_awards;
+            $fields_updated[] = 'awards';
+        }
+
+        // Location taxonomy (state)
+        if ( $ai_state ) {
+            $state_term = get_term_by( 'name', $ai_state, 'at_biz_dir-location' );
+            if ( $state_term && ! is_wp_error( $state_term ) ) {
+                wp_set_object_terms( $post_id, [ $state_term->term_id ], 'at_biz_dir-location' );
+                $fields_debug['location_term'] = $ai_state . ' (id=' . $state_term->term_id . ')';
+                $fields_updated[] = 'location';
+            } else {
+                $fields_debug['location_term'] = 'not found: ' . $ai_state;
+            }
+        }
+
+        // Categories taxonomy
+        $ai_categories = $ai_data['categories'] ?? [];
+        if ( is_array( $ai_categories ) && ! empty( $ai_categories ) ) {
+            $term_ids = [];
+            foreach ( $ai_categories as $cat_name ) {
+                $cat_term = get_term_by( 'name', $cat_name, 'at_biz_dir-category' );
+                if ( $cat_term && ! is_wp_error( $cat_term ) ) {
+                    $term_ids[] = $cat_term->term_id;
+                }
+            }
+            if ( $term_ids ) {
+                wp_set_object_terms( $post_id, $term_ids, 'at_biz_dir-category' );
+                $fields_debug['categories'] = $ai_categories;
+                $fields_updated[] = 'categories';
+            }
+        }
+
         // Biography → post_content — always overwrite
         $bio = trim( $ai_data['biography'] ?? '' );
         if ( $bio ) {
@@ -275,6 +370,46 @@ class AOS_MS_Enrich_Metabox {
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
+
+    /**
+     * Geocode a full address string to lat/lng.
+     * Tries Google Geocoding API first (using Places API key), then falls back
+     * to Nominatim (OpenStreetMap) which requires no key.
+     *
+     * @param  string $address  Full formatted address (street, city, state zip)
+     * @return array|null       [ 'lat' => float, 'lng' => float ] or null on failure
+     */
+    private static function geocode_address( $address ) {
+        $places_key = AOS_MS_Settings::get( 'places_api_key' );
+
+        if ( $places_key ) {
+            $url      = 'https://maps.googleapis.com/maps/api/geocode/json?address=' . urlencode( $address ) . '&key=' . urlencode( $places_key );
+            $response = wp_remote_get( $url, [ 'timeout' => 10, 'sslverify' => true ] );
+            if ( ! is_wp_error( $response ) && wp_remote_retrieve_response_code( $response ) === 200 ) {
+                $data = json_decode( wp_remote_retrieve_body( $response ), true );
+                if ( isset( $data['results'][0]['geometry']['location'] ) ) {
+                    $loc = $data['results'][0]['geometry']['location'];
+                    return [ 'lat' => (string) $loc['lat'], 'lng' => (string) $loc['lng'] ];
+                }
+            }
+        }
+
+        // Fallback: Nominatim (OpenStreetMap) — free, no key required
+        $url      = 'https://nominatim.openstreetmap.org/search?format=json&q=' . urlencode( $address ) . '&limit=1';
+        $response = wp_remote_get( $url, [
+            'timeout' => 10,
+            'sslverify' => false,
+            'headers' => [ 'User-Agent' => 'AOS-Member-Sync/1.4.1 (find.orthodontics.com)' ],
+        ] );
+        if ( ! is_wp_error( $response ) && wp_remote_retrieve_response_code( $response ) === 200 ) {
+            $data = json_decode( wp_remote_retrieve_body( $response ), true );
+            if ( ! empty( $data[0]['lat'] ) ) {
+                return [ 'lat' => (string) $data[0]['lat'], 'lng' => (string) $data[0]['lon'] ];
+            }
+        }
+
+        return null;
+    }
 
     /**
      * Extract city and state from listing meta, trying multiple field patterns.
